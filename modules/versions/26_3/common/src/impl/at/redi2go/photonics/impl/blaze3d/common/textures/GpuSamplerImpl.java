@@ -12,52 +12,52 @@ import org.spongepowered.asm.mixin.Shadow;
 import java.util.OptionalDouble;
 
 @Mixin(GpuSampler.class)
-public abstract class GpuSamplerImpl implements IGpuSampler {
+public interface GpuSamplerImpl extends IGpuSampler {
     @Shadow
-    public abstract AddressMode getAddressModeU();
+    AddressMode getAddressModeU();
 
     @Shadow
-    public abstract AddressMode getAddressModeV();
+    AddressMode getAddressModeV();
 
     @Shadow
-    public abstract FilterMode getMinFilter();
+    FilterMode getMinFilter();
 
     @Shadow
-    public abstract FilterMode getMagFilter();
+    FilterMode getMagFilter();
 
     @Shadow
-    public abstract int getMaxAnisotropy();
+    int getMaxAnisotropy();
 
     @Shadow
-    public abstract OptionalDouble getMaxLod();
+    OptionalDouble getMaxLod();
 
     @Override
-    public IAddressMode ph$addressModeU() {
+    default IAddressMode ph$addressModeU() {
         return (IAddressMode) (Object) getAddressModeU();
     }
 
     @Override
-    public IAddressMode ph$addressModeV() {
+    default IAddressMode ph$addressModeV() {
         return (IAddressMode) (Object) getAddressModeV();
     }
 
     @Override
-    public IFilterMode ph$minFilter() {
+    default IFilterMode ph$minFilter() {
         return (IFilterMode) (Object) getMinFilter();
     }
 
     @Override
-    public IFilterMode ph$magFilter() {
+    default IFilterMode ph$magFilter() {
         return (IFilterMode) (Object) getMagFilter();
     }
 
     @Override
-    public int ph$maxAnisotropy() {
+    default int ph$maxAnisotropy() {
         return getMaxAnisotropy();
     }
 
     @Override
-    public OptionalDouble ph$maxLod() {
+    default OptionalDouble ph$maxLod() {
         return getMaxLod();
     }
 }

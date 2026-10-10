@@ -7,58 +7,45 @@ import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
-import java.nio.ByteBuffer;
-
 @Mixin(GpuBuffer.class)
-public abstract class GpuBufferImpl implements IGpuBuffer {
+public interface GpuBufferImpl extends IGpuBuffer {
     @Shadow
-    public abstract int usage();
+    int usage();
 
     @Shadow
-    public abstract long size();
+    long size();
 
     @Shadow
-    public abstract GpuBufferSlice slice(long l, long m);
+    GpuBufferSlice slice(long l, long m);
 
     @Shadow
-    public abstract GpuBufferSlice slice();
+    GpuBufferSlice slice();
 
     @Shadow
-    public abstract boolean isClosed();
+    boolean isClosed();
 
     @Override
-    public int ph$usage() {
+    default int ph$usage() {
         return usage();
     }
 
     @Override
-    public long ph$size() {
+    default long ph$size() {
         return size();
     }
 
     @Override
-    public IGpuBufferSlice ph$slice(long offset, long length) {
+    default IGpuBufferSlice ph$slice(long offset, long length) {
         return (IGpuBufferSlice) (Object) slice(offset, length);
     }
 
     @Override
-    public IGpuBufferSlice ph$slice() {
+    default IGpuBufferSlice ph$slice() {
         return (IGpuBufferSlice) (Object) slice();
     }
 
     @Override
-    public boolean ph$isClosed() {
+    default boolean ph$isClosed() {
         return isClosed();
-    }
-
-    @Mixin(GpuBufferSlice.MappedView.class)
-    public static abstract class MappedViewImpl implements IGpuBuffer.MappedView {
-        @Shadow
-        public abstract ByteBuffer data();
-
-        @Override
-        public ByteBuffer ph$data() {
-            return data();
-        }
     }
 }
