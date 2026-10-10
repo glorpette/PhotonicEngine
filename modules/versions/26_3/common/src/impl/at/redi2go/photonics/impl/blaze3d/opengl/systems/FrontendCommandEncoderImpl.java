@@ -6,11 +6,12 @@ import at.redi2go.photonics.game.blaze3d.buffers.IGpuBufferSlice;
 import at.redi2go.photonics.game.blaze3d.systems.ICommandEncoder;
 import at.redi2go.photonics.game.blaze3d.textures.IGpuTexture;
 import at.redi2go.photonics.game.blaze3d.textures.TextureFormat;
-import com.mojang.renderpearl.backend.api.CommandEncoderBackend;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
+import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.frontend.FrontendCommandEncoder;
 import org.joml.Vector2ic;
 import org.joml.Vector3ic;
-import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
@@ -19,26 +20,67 @@ import java.util.concurrent.CompletableFuture;
 
 @Mixin(FrontendCommandEncoder.class)
 public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
-    @Shadow @Final private CommandEncoderBackend backend;
+    @Shadow
+    public abstract void writeToBuffer(GpuBufferSlice slice, ByteBuffer data);
+
+    @Shadow
+    public abstract void copyToBuffer(GpuBufferSlice src, GpuBufferSlice dst);
+
+    @Shadow
+    public abstract void writeToTexture(
+            GpuTexture destination,
+            ByteBuffer source,
+            int mipLevel,
+            int depthOrLayer,
+            int destX,
+            int destY,
+            int width,
+            int height
+    );
+
+    @Shadow
+    public abstract void copyTextureToBuffer(
+            GpuTexture source,
+            GpuBuffer destination,
+            long offset,
+            Runnable callback,
+            int mipLevel,
+            int x,
+            int y,
+            int width,
+            int height
+    );
 
     @Override
     public void ph$writeToBuffer(IGpuBufferSlice gpuBufferSlice, ByteBuffer byteBuffer) {
-        ((ICommandEncoder) backend).ph$writeToBuffer(gpuBufferSlice, byteBuffer);
+        writeToBuffer((GpuBufferSlice) (Object) gpuBufferSlice, byteBuffer);
     }
 
     @Override
     public IGpuBuffer.MappedView ph$mapBuffer(IGpuBuffer gpuBuffer, @BufferUsage int mapUsage) {
-        return ((ICommandEncoder) backend).ph$mapBuffer(gpuBuffer, mapUsage);
+        if ((mapUsage & (BufferUsage.MAP_READ | BufferUsage.MAP_WRITE)) == 0)
+            throw new IllegalArgumentException("Must have one of BufferUsage.MAP_READ or BufferUsage.MAP_WRITE");
+
+        return (IGpuBuffer.MappedView) (Object) ((GpuBuffer) (Object) gpuBuffer).slice().map(
+                (mapUsage & BufferUsage.MAP_READ) != 0,
+                (mapUsage & BufferUsage.MAP_WRITE) != 0
+        );
     }
 
     @Override
     public IGpuBuffer.MappedView ph$mapBuffer(IGpuBufferSlice gpuBufferSlice, @BufferUsage int mapUsage) {
-        return ((ICommandEncoder) backend).ph$mapBuffer(gpuBufferSlice, mapUsage);
+        if ((mapUsage & (BufferUsage.MAP_READ | BufferUsage.MAP_WRITE)) == 0)
+            throw new IllegalArgumentException("Must have one of BufferUsage.MAP_READ or BufferUsage.MAP_WRITE");
+
+        return (IGpuBuffer.MappedView) (Object) ((GpuBufferSlice) (Object) gpuBufferSlice).map(
+                (mapUsage & BufferUsage.MAP_READ) != 0,
+                (mapUsage & BufferUsage.MAP_WRITE) != 0
+        );
     }
 
     @Override
     public void ph$copyToBuffer(IGpuBufferSlice srcSlice, IGpuBufferSlice dstSlice) {
-        ((ICommandEncoder) backend).ph$copyToBuffer(srcSlice, dstSlice);
+        copyToBuffer((GpuBufferSlice) (Object) srcSlice, (GpuBufferSlice) (Object) dstSlice);
     }
 
     @Override
@@ -51,7 +93,16 @@ public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
             Vector3ic size,
             Vector3ic offset
     ) {
-        ((ICommandEncoder) backend).ph$writeToTexture(gpuTexture, byteBuffer, bufferFormat, layer, mipLevel, size, offset);
+        writeToTexture(
+                (GpuTexture) (Object) gpuTexture,
+                byteBuffer,
+                mipLevel,
+                layer,
+                offset.x(),
+                offset.y(),
+                size.x(),
+                size.y()
+        );
     }
 
     @Override
@@ -64,6 +115,18 @@ public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
             int layer,
             int mipLevel
     ) {
-        return ((ICommandEncoder) backend).ph$copyTextureToBuffer(srcTexture, srcOffset, copySize, dstBuffer, dstOffset, layer, mipLevel);
+        var future = new CompletableFuture<Void>();
+        copyTextureToBuffer(
+                (GpuTexture) (Object) srcTexture,
+                (GpuBuffer) (Object) dstBuffer,
+                dstOffset,
+                () -> future.complete(null),
+                mipLevel,
+                srcOffset.x(),
+                srcOffset.y(),
+                copySize.x(),
+                copySize.y()
+        );
+        return future;
     }
 }

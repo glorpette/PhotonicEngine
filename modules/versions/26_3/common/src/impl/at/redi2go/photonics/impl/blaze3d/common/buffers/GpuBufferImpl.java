@@ -52,12 +52,12 @@ public abstract class GpuBufferImpl implements IGpuBuffer {
     }
 
     @Mixin(GpuBufferSlice.MappedView.class)
-    public interface MappedViewImpl extends IGpuBuffer.MappedView {
+    public static abstract class MappedViewImpl implements IGpuBuffer.MappedView {
         @Shadow
-        ByteBuffer data();
+        public abstract ByteBuffer data();
 
         @Override
-        default ByteBuffer ph$data() {
+        public ByteBuffer ph$data() {
             return data();
         }
     }
