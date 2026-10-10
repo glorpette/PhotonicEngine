@@ -36,6 +36,7 @@ include(":modules:engine")
 include(":modules:versions")
 
 includeMcVersion("1.21.11")
+includeMcVersion("26.3")
 
 
 
