@@ -2,9 +2,8 @@ package at.redi2go.photonics.impl.blaze3d.common.buffers;
 
 import at.redi2go.photonics.game.blaze3d.buffers.IGpuBuffer;
 import at.redi2go.photonics.game.blaze3d.buffers.IGpuBufferSlice;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.opengl.GlBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
@@ -52,7 +51,7 @@ public abstract class GpuBufferImpl implements IGpuBuffer {
         return isClosed();
     }
 
-    @Mixin(GpuBuffer.MappedView.class)
+    @Mixin(GpuBufferSlice.MappedView.class)
     public interface MappedViewImpl extends IGpuBuffer.MappedView {
         @Shadow
         ByteBuffer data();

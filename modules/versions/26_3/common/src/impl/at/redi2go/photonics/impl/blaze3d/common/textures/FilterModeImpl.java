@@ -1,7 +1,7 @@
 package at.redi2go.photonics.impl.blaze3d.common.textures;
 
 import at.redi2go.photonics.game.blaze3d.textures.IFilterMode;
-import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.renderpearl.api.textures.FilterMode;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 

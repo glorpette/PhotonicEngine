@@ -1,0 +1,27 @@
+package at.redi2go.photonics.engine.rendering.world.registry.object;
+
+import at.redi2go.photonics.game.Disposable;
+import org.jspecify.annotations.Nullable;
+
+import java.util.function.Supplier;
+
+public abstract class InnerWorldObject<M extends Disposable> extends AbstractWorldObject<M> {
+    public InnerWorldObject(ObjectRegistry<?> registry) {
+        super(registry);
+    }
+
+    public M setMemory(Supplier<M> memorySupplier) {
+        return super.setMemory(memorySupplier);
+    }
+
+    public @Nullable M memoryOrNull() {
+        return super.memoryOrNull();
+    }
+
+    public M memoryOrThrow() {
+        return super.memoryOrThrow();
+    }
+
+    @Override
+    protected abstract WorldObject getKey();
+}

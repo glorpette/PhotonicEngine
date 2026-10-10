@@ -5,7 +5,7 @@ import at.redi2go.photonics.engine.iris.pipeline.buffers.IrisBufferHolder;
 import at.redi2go.photonics.game.blaze3d.buffers.BufferUsage;
 import at.redi2go.photonics.game.blaze3d.buffers.IGpuBuffer;
 import at.redi2go.photonics.mixins.MixinOrder;
-import com.mojang.blaze3d.opengl.GlBuffer;
+import com.mojang.renderpearl.backend.opengl.GlBuffer;
 import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;

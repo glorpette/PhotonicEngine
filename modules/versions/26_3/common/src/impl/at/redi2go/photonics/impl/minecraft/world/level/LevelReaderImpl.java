@@ -132,11 +132,6 @@ public interface LevelReaderImpl extends ILevelReader {
         }
 
         @Override
-        public float getShade(@NonNull Direction direction, boolean bl) {
-            throw new UnsupportedOperationException("getShade");
-        }
-
-        @Override
         public @NonNull LevelLightEngine getLightEngine() {
             throw new UnsupportedOperationException("getLightEngine");
         }

@@ -7,6 +7,10 @@ kotlin {
 }
 
 repositories {
+    mavenCentral()
+    gradlePluginPortal()
+    google()
+
     maven("https://maven.fabricmc.net") {
         name = "Fabric"
     }
@@ -26,11 +30,6 @@ repositories {
             includeGroup("maven.modrinth")
         }
     }
-
-    google()
-    mavenCentral()
-
-    gradlePluginPortal()
 }
 
 dependencies {

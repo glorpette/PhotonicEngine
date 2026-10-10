@@ -40,8 +40,7 @@ public abstract class IrisPipelineManagerMixin implements IrisPipelineManagerExt
     private void preparePipeline(NamespacedId currentDimension, CallbackInfoReturnable<WorldRenderingPipeline> cir) {
         if (IrisManager.hasPipeline()) return;
 
-        //TODO Add to more sensible spot
-//        BlockMesher.REGISTRY.addDefault(new MinecraftBlockMesher());
+        at.redi2go.photonics.engine.rendering.world.bakery.BlockMesher.REGISTRY.addDefault(new at.redi2go.photonics.common.meshing.MinecraftBlockMesher());
 
         var shaderPack = (IrisPack) Iris.getCurrentPack().orElse(null);
         if (shaderPack == null) return;

@@ -5,7 +5,15 @@ plugins {
 
 val mainLibs = libs263
 
+loom {
+    noIntermediateMappings()
+}
+
 dependencies {
+    add("mappings", loom.layered {
+        mappings(file("../empty.tiny"))
+    })
+
     // Required by sodium
     modRuntimeOnly(mainLibs.fabric.api)
 }
@@ -25,5 +33,9 @@ tasks {
                 "fabric_loader_version" to fabricLoaderVersion
             )
         }
+    }
+
+    remapSourcesJar {
+        enabled = false
     }
 }

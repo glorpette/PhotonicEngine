@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.Shadow;
 public interface GlDebugLabelsExt {
     void applyLabel(GlTexture texture);
 
-    @Mixin(targets = "com.mojang.blaze3d.opengl.GlDebugLabel$Core")
+    @Mixin(targets = "com.mojang.renderpearl.backend.opengl.GlDebugLabel$Core")
     abstract class CoreImpl implements GlDebugLabelsExt {
         @Shadow @Final private int maxLabelLength;
 
@@ -21,7 +21,7 @@ public interface GlDebugLabelsExt {
         }
     }
 
-    @Mixin(targets = "com.mojang.blaze3d.opengl.GlDebugLabel$Empty")
+    @Mixin(targets = "com.mojang.renderpearl.backend.opengl.GlDebugLabel$Empty")
     abstract class EmptyImpl implements GlDebugLabelsExt {
         @Override
         public void applyLabel(GlTexture texture) {
@@ -29,7 +29,7 @@ public interface GlDebugLabelsExt {
         }
     }
 
-    @Mixin(targets = "com.mojang.blaze3d.opengl.GlDebugLabel$Ext")
+    @Mixin(targets = "com.mojang.renderpearl.backend.opengl.GlDebugLabel$Ext")
     abstract class ExtImpl implements GlDebugLabelsExt {
         @Override
         public void applyLabel(GlTexture texture) {

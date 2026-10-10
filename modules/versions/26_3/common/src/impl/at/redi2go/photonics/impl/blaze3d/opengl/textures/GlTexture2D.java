@@ -7,7 +7,7 @@ import at.redi2go.photonics.game.blaze3d.textures.TextureUsage;
 import at.redi2go.photonics.impl.blaze3d.opengl.DirectStateAccessor;
 import at.redi2go.photonics.impl.blaze3d.opengl.GlConstExt;
 import at.redi2go.photonics.impl.blaze3d.opengl.buffers.GlBufferAccessor;
-import com.mojang.blaze3d.opengl.GlStateManager;
+import com.mojang.renderpearl.backend.opengl.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import org.joml.Vector2ic;
 import org.joml.Vector3i;

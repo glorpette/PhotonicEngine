@@ -34,7 +34,7 @@ public abstract class BlockStateImpl extends BlockBehaviour.BlockStateBase imple
 
     @Override
     public boolean ph$isViewBlocking(IBlockGetter blockGetter, IBlockPos blockPos) {
-        return isViewBlocking((BlockGetter) blockGetter, (BlockPos) blockPos);
+        return isViewBlocking((BlockGetter) blockGetter, (BlockPos) blockPos, new net.minecraft.world.phys.AABB((BlockPos) blockPos));
     }
 
     @Override
@@ -48,7 +48,7 @@ public abstract class BlockStateImpl extends BlockBehaviour.BlockStateBase imple
         return getValue((Property<T>) property);
     }
 
-    private BlockStateImpl(Block block, Reference2ObjectArrayMap<Property<?>, Comparable<?>> reference2ObjectArrayMap, MapCodec<BlockState> mapCodec) {
-        super(block, reference2ObjectArrayMap, mapCodec);
+    private BlockStateImpl(Block block, Property<?>[] properties, Comparable<?>[] values) {
+        super(block, properties, values);
     }
 }

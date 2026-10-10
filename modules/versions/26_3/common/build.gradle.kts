@@ -3,6 +3,12 @@ plugins {
     `photonics-common`
 }
 
+loom {
+    noIntermediateMappings()
+}
+
 dependencies {
-    add("mappings", loom.officialMojangMappings())
+    add("mappings", loom.layered {
+        mappings(file("../empty.tiny"))
+    })
 }

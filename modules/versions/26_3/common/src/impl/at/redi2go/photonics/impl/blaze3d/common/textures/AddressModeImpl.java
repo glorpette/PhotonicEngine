@@ -1,7 +1,7 @@
 package at.redi2go.photonics.impl.blaze3d.common.textures;
 
 import at.redi2go.photonics.game.blaze3d.textures.IAddressMode;
-import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.renderpearl.api.textures.AddressMode;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 

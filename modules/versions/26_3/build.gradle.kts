@@ -2,7 +2,7 @@ val mainLibs = libs263
 
 photonics {
     minecraft = mainLibs.versions.minecraft.get()
-    javaVersion = JavaVersion.VERSION_21
+    javaVersion = JavaVersion.toVersion(25)
 
     mixins {
         packageName = "at.redi2go.photonics"
@@ -11,9 +11,9 @@ photonics {
     }
 
     commonDependencies {
-        mappings(loom.officialMojangMappings())
+        // Minecraft 26.x is unobfuscated, no mappings needed
 
-         //Use by fabric (for obvious reasons) & common for mixin dependencies
+        //Use by fabric (for obvious reasons) & common for mixin dependencies
         fabricLoader(mainLibs.fabric.loader)
 
         shadow(sharedLibs.semver)

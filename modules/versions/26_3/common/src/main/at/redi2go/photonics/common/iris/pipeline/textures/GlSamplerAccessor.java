@@ -1,6 +1,6 @@
 package at.redi2go.photonics.common.iris.pipeline.textures;
 
-import com.mojang.blaze3d.opengl.GlSampler;
+import com.mojang.renderpearl.backend.opengl.GlSampler;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 

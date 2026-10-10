@@ -9,8 +9,8 @@ jcpp = "1.4.14"
 
 fabric-api = "0.162.0+26.3"
 
-sodium = "mc26.3-0.8.4-fabric"
-iris = "1.10.5+26.3-fabric"
+sodium = "mc26.3-0.9.2-fabric"
+iris = "1.11.7+26.3-fabric"
 
 [libraries]
 fabric-loader = { module = "net.fabricmc:fabric-loader", version.ref = "fabric-loader" }

@@ -10,19 +10,19 @@ import at.redi2go.photonics.game.blaze3d.textures.IGpuSampler;
 import at.redi2go.photonics.game.blaze3d.textures.IGpuTexture;
 import at.redi2go.photonics.game.blaze3d.textures.TextureFormat;
 import at.redi2go.photonics.game.blaze3d.textures.TextureUsage;
-import at.redi2go.photonics.impl.blaze3d.opengl.GlDebugLabelsExt;
 import at.redi2go.photonics.impl.blaze3d.opengl.textures.GlTexture;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.opengl.GlDebugLabel;
-import com.mojang.blaze3d.opengl.GlDevice;
-import com.mojang.blaze3d.systems.CommandEncoder;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
-import com.mojang.blaze3d.textures.GpuSampler;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.commands.CommandEncoder;
+import com.mojang.renderpearl.api.textures.AddressMode;
+import com.mojang.renderpearl.api.textures.FilterMode;
+import com.mojang.renderpearl.api.textures.GpuSampler;
+import com.mojang.renderpearl.frontend.FrontendGpuDevice;
+import net.minecraft.util.StringUtil;
 import org.joml.Vector3ic;
 import org.jspecify.annotations.Nullable;
+import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
-import org.spongepowered.asm.mixin.Final;
+import org.lwjgl.opengl.KHRDebug;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
@@ -30,8 +30,9 @@ import java.nio.ByteBuffer;
 import java.util.OptionalDouble;
 import java.util.function.Supplier;
 
-@Mixin(GlDevice.class)
-public abstract class GlDeviceImpl implements IGpuDevice {
+@Mixin(FrontendGpuDevice.class)
+public abstract class FrontendGpuDeviceImpl implements IGpuDevice {
+
     @Shadow
     public abstract CommandEncoder createCommandEncoder();
 
@@ -44,7 +45,8 @@ public abstract class GlDeviceImpl implements IGpuDevice {
     @Shadow
     public abstract GpuBuffer createBuffer(@Nullable Supplier<String> supplier, int i, ByteBuffer byteBuffer);
 
-    @Shadow @Final private GlDebugLabel debugLabels;
+    @Shadow
+    public abstract boolean isDebuggingEnabled();
 
     @Override
     public ICommandEncoder ph$createCommandEncoder() {
@@ -79,7 +81,9 @@ public abstract class GlDeviceImpl implements IGpuDevice {
             }
         }
 
-        ((GlDebugLabelsExt) debugLabels).applyLabel(texture);
+        if (isDebuggingEnabled() && texture.ph$getLabel() != null) {
+            KHRDebug.glObjectLabel(GL11.GL_TEXTURE, texture.ph$getHandle(), StringUtil.truncateStringIfNecessary(texture.ph$getLabel(), 256, true));
+        }
         return texture;
     }
 
