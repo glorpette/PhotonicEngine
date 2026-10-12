@@ -72,6 +72,7 @@ public abstract class PhotonicsPipeline extends AbstractRenderingComponent {
                 IMinecraft.getRenderDistance(),
                 PhConfig.getMaxRaytraceDistance()
         )));
+        registerResource(atlasDownloader.onResourceReload(sectionManager::requestRetryAll));
 
         var worldAllocator = registerComponent(new BufferWorldAllocator(PhConfig.getMaxRaytraceWorldBytes()));
         var paletteTexture = registerComponent(new BufferPaletteTexture(2048, 600));

@@ -17,18 +17,21 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class BlockModelImpl extends AbstractWorldObject<NoMemory> implements BlockModel {
     private final long vertexHash;
+    private final long resourceGeneration;
     private final PartsWrapper parts;
 
     private final Queue<BlockMeshState> meshes = new ConcurrentLinkedQueue<>();
 
     public BlockModelImpl(
             long vertexHash,
+            long resourceGeneration,
             List<BlockPartImpl> parts,
             BlockModelRegistry registry
     ) {
         super(registry);
 
         this.vertexHash = vertexHash;
+        this.resourceGeneration = resourceGeneration;
         this.parts = new PartsWrapper(parts);
 
         parts.forEach(e -> e.owner = this);
@@ -38,6 +41,10 @@ public class BlockModelImpl extends AbstractWorldObject<NoMemory> implements Blo
 
     public long vertexHash() {
         return vertexHash;
+    }
+
+    public long resourceGeneration() {
+        return resourceGeneration;
     }
 
     public Queue<BlockMeshState> meshes() {
@@ -57,12 +64,14 @@ public class BlockModelImpl extends AbstractWorldObject<NoMemory> implements Blo
 
     @Override
     public int hashCode() {
-        return Long.hashCode(vertexHash);
+        return Objects.hash(vertexHash, resourceGeneration);
     }
 
     @Override
     public boolean equals(Object o) {
-        return o == this || (o instanceof BlockModelImpl model && model.vertexHash == vertexHash);
+        return o == this || (o instanceof BlockModelImpl model
+                && model.vertexHash == vertexHash
+                && model.resourceGeneration == resourceGeneration);
     }
 
     private class PartsWrapper extends AbstractList<BlockModel.Part> {

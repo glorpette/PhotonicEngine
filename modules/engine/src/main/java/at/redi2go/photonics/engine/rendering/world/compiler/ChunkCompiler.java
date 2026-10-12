@@ -10,6 +10,7 @@ import at.redi2go.photonics.engine.RenderingComponent;
 import at.redi2go.photonics.engine.rendering.SectionManager;
 import at.redi2go.photonics.engine.rendering.world.bakery.BlockMesher;
 import at.redi2go.photonics.engine.rendering.world.IgnoredInterruptedException;
+import at.redi2go.photonics.engine.rendering.world.StaleResourceGenerationException;
 import at.redi2go.photonics.engine.rendering.world.block.BlockModel;
 import at.redi2go.photonics.engine.rendering.world.registry.WorldRegistry;
 import at.redi2go.photonics.engine.rendering.world.registry.light.WorldLight;
@@ -40,11 +41,12 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
     private final Queue<Vector3i> unloadQueue;
     private final SectionManager.SectionQueue sectionQueue;
     private final SectionManager.TaskQueue<ChunkCompiler.BuildResult> builtSectionQueue;
+    private final SectionManager sectionManager;
 
     private final WorldRegistry worldRegistry;
 
     private final ConcurrentMap<Vector3i, Long> latestSection = new ConcurrentHashMap<>();
-    private final ConcurrentMap<Vector3i, Long> sectionHashes = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Vector3i, SectionHash> sectionHashes = new ConcurrentHashMap<>();
 
     private final Thread[] threads = new Thread[THREAD_COUNT];
 
@@ -53,6 +55,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
             SectionManager.TaskQueue<ChunkCompiler.BuildResult> builtSectionQueue,
             WorldRegistry worldRegistry
     ) {
+        this.sectionManager = sectionManager;
         this.unloadQueue = sectionManager.newUnloadQueue();
         this.sectionQueue = sectionManager.newSectionQueue(false);
         this.builtSectionQueue = builtSectionQueue;
@@ -86,10 +89,11 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                 if (!isLatestSection(section.pos(), section.priority())) continue;
 
                 // Computing the hash immediately is cheaper than meshing an entire section just to discard it
+                long resourceGeneration = worldRegistry.resourceGeneration();
                 long hash = section.computeSectionHash(level);
-                if (isDuplicateSection(section.pos(), hash)) continue;
+                if (isDuplicateSection(section.pos(), hash, resourceGeneration)) continue;
 
-                var buildResult = new BuildResult(section.pos(), section.blockPos(), hash, section.priority());
+                var buildResult = new BuildResult(section.pos(), section.blockPos(), hash, resourceGeneration, section.priority());
                 boolean setup = false;
                 try {
                     BlockMesher.REGISTRY.setup();
@@ -107,7 +111,8 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                                                 new Vector3i(blockChunkOffset),
                                                 blockPos,
                                                 block,
-                                                level
+                                                level,
+                                                resourceGeneration
                                         );
                                     } catch (Throwable failure) {
                                         buildResult.recordFailure(failure);
@@ -154,14 +159,17 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
         }).equals(priority);
     }
 
-    private boolean isDuplicateSection(Vector3i pos, long hash) {
-        return Objects.equals(sectionHashes.get(pos), hash);
+    private boolean isDuplicateSection(Vector3i pos, long hash, long resourceGeneration) {
+        return Objects.equals(sectionHashes.get(pos), new SectionHash(hash, resourceGeneration));
     }
 
-    private boolean setSectionHash(Vector3i pos, long hash) {
-        var previousHash = sectionHashes.put(pos, hash);
-        return !Objects.equals(previousHash, hash);
+    private boolean setSectionHash(Vector3i pos, long hash, long resourceGeneration) {
+        var value = new SectionHash(hash, resourceGeneration);
+        var previousHash = sectionHashes.put(pos, value);
+        return !Objects.equals(previousHash, value);
     }
+
+    private record SectionHash(long blockHash, long resourceGeneration) {}
 
     private void unloadChunks() {
         while (!unloadQueue.isEmpty()) {
@@ -198,6 +206,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
         private final Vector3i chunkPos;
         private final Vector3i chunkBlockPos;
         private final long hash;
+        private final long resourceGeneration;
         private final long priority;
 
         private final List<BlockResult> blocks = new ArrayList<>();
@@ -205,6 +214,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
         private final AtomicInteger pendingBlocks = new AtomicInteger();
         private final CompletableFuture<Void> future = new CompletableFuture<>();
         private final AtomicBoolean failed = new AtomicBoolean();
+        private final AtomicBoolean reloadCancelled = new AtomicBoolean();
         private final AtomicBoolean allocationFailed = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -212,11 +222,13 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                 Vector3i chunkPos,
                 Vector3i chunkBlockPos,
                 long hash,
+                long resourceGeneration,
                 long priority
         ) {
             this.chunkPos = chunkPos;
             this.chunkBlockPos = chunkBlockPos;
             this.hash = hash;
+            this.resourceGeneration = resourceGeneration;
             this.priority = priority;
         }
 
@@ -247,11 +259,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                     block.whenComplete((result, t) -> {
                         try {
                             if (t != null) {
-                                failed.set(true);
-                                if (isBufferAllocationFailure(t))
-                                    allocationFailed.set(true);
-                                if (!IgnoredInterruptedException.shouldIgnore(t))
-                                    reportMeshFailure(t);
+                                recordFailure(t);
                             } else if (result != null) {
                                 addBlock(new BlockResult(x, y, z, blockState, result));
                             }
@@ -263,8 +271,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                                     callbackFailure.addSuppressed(cleanupFailure);
                                 }
                             }
-                            failed.set(true);
-                            reportMeshFailure(callbackFailure);
+                            recordFailure(callbackFailure);
                         } finally {
                             completeBlock();
                         }
@@ -336,13 +343,19 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                     return;
                 }
 
+                if (reloadCancelled.get() || !isCurrentGeneration()) {
+                    close();
+                    sectionManager.requestRetry(chunkPos);
+                    return;
+                }
+
                 if (!builtSectionQueue.offer(chunkPos, this)) {
                     close();
                     return;
                 }
 
                 if (!failed.get())
-                    setSectionHash(chunkPos, hash);
+                    setSectionHash(chunkPos, hash, resourceGeneration);
             } catch (InterruptedException e) {
                 close();
                 throw e;
@@ -350,10 +363,14 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
         }
 
         public boolean failed() {
-            return failed.get();
+            return failed.get() || reloadCancelled.get();
         }
 
         private void recordFailure(Throwable failure) {
+            if (StaleResourceGenerationException.causedBy(failure) || !isCurrentGeneration()) {
+                reloadCancelled.set(true);
+                return;
+            }
             failed.set(true);
             if (isBufferAllocationFailure(failure))
                 allocationFailed.set(true);
@@ -363,6 +380,10 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
 
         public boolean allocationFailed() {
             return allocationFailed.get();
+        }
+
+        public boolean isCurrentGeneration() {
+            return resourceGeneration == worldRegistry.resourceGeneration();
         }
 
         public void forEachBlock(TriConsumer<Vector3i, IBlockState, BlockModel> blockConsumer) {

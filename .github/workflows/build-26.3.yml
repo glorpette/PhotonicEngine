@@ -1,0 +1,79 @@
+name: build 26.3 jar
+
+on:
+  push:
+    branches:
+      - '26.3'
+  pull_request:
+    branches:
+      - '26.3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build mod jar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: install zulu jdk 25
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: zulu
+          java-version: '25'
+
+      - name: configure gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+
+      - name: build 26.3 fabric jar
+        run: bash ./gradlew :modules:versions:mc263:fabric:jar --no-daemon --max-workers=2 --stacktrace
+
+      - name: verify jar and create checksum
+        id: package
+        working-directory: modules/versions/26_3/fabric/build/libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar='photonics-0.4.5-fabric+MC-26.3.jar'
+          test -f "$jar"
+          python3 - "$jar" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          jar_path = sys.argv[1]
+          with zipfile.ZipFile(jar_path) as archive:
+              metadata = json.loads(archive.read("fabric.mod.json"))
+          assert metadata["id"] == "photonics", metadata
+          assert metadata["version"] == "0.4.5+26.3", metadata
+          assert metadata["depends"]["java"] == ">=25", metadata
+          print(f"verified {jar_path} ({metadata['version']}, java {metadata['depends']['java']})")
+          PY
+          sha256sum "$jar" > "$jar.sha256"
+          echo "jar=modules/versions/26_3/fabric/build/libs/$jar" >> "$GITHUB_OUTPUT"
+          echo "checksum=modules/versions/26_3/fabric/build/libs/$jar.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: upload mod jar
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        with:
+          name: photonics-0.4.5-mc-26.3
+          path: |
+            ${{ steps.package.outputs.jar }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

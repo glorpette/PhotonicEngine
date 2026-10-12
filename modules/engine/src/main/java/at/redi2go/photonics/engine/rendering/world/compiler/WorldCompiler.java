@@ -135,7 +135,10 @@ public class WorldCompiler implements Runnable, RenderingComponent {
                     try {
                         List<ChunkCompiler.BuildResult> successfulBuilds = new ArrayList<>(builtSections.size());
                         for (var section : builtSections) {
-                            if (section.failed())
+                            if (!section.isCurrentGeneration()) {
+                                section.close();
+                                sectionManager.requestRetry(section.chunkPos());
+                            } else if (section.failed())
                                 section.close();
                             else {
                                 successfulBuilds.add(section);
@@ -207,7 +210,7 @@ public class WorldCompiler implements Runnable, RenderingComponent {
     private void clearPendingSections(List<ChunkCompiler.BuildResult> sections) {
         IntSet regions = new IntOpenHashSet(sections.size());
         for (var section : sections)
-            if (!section.failed())
+            if (!section.failed() && section.isCurrentGeneration())
                 regions.add(regionIds.getId(section.chunkPos()));
 
         treeManager.removeRegions(regions);
@@ -255,6 +258,10 @@ public class WorldCompiler implements Runnable, RenderingComponent {
 
         for (var section : sections) {
             try (section) {
+                if (!section.isCurrentGeneration()) {
+                    sectionManager.requestRetry(section.chunkPos());
+                    continue;
+                }
                 if (section.failed()) continue;
                 blockSorter.reset();
 

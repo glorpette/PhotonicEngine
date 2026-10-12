@@ -23,19 +23,21 @@ public class WorldRegistry implements AutoCloseable {
 
     private final BlockRegistry blockRegistry;
     private final BlockModelRegistry blockModelRegistry;
+    private final AtlasDownloader atlasDownloader;
 
     public WorldRegistry(
             WorldAllocator worldAllocator,
             PaletteTexture paletteTexture,
             AtlasDownloader atlasDownloader
     ) {
+        this.atlasDownloader = atlasDownloader;
         var bakery = BlockBakery.newBakery(atlasDownloader);
 
         this.lightRegistry = new WorldLightRegistry(lock, worldAllocator);
         this.paletteRegistry = new PaletteRegistry(lock, paletteTexture);
 
         this.blockRegistry = new BlockRegistry(lock, worldAllocator, paletteRegistry);
-        this.blockModelRegistry = new BlockModelRegistry(lock, bakery, blockRegistry);
+        this.blockModelRegistry = new BlockModelRegistry(lock, bakery, blockRegistry, atlasDownloader);
     }
 
     public WorldLightRegistry lightRegistry() {
@@ -44,6 +46,10 @@ public class WorldRegistry implements AutoCloseable {
 
     public BlockModelRegistry blockModelRegistry() {
         return blockModelRegistry;
+    }
+
+    public long resourceGeneration() {
+        return atlasDownloader.generation();
     }
 
     public void freeUnusedObjects() throws InterruptedException {

@@ -1,6 +1,7 @@
 package at.redi2go.photonics.common.iris;
 
 import at.redi2go.photonics.engine.rendering.world.IgnoredInterruptedException;
+import at.redi2go.photonics.engine.rendering.world.StaleResourceGenerationException;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import org.jspecify.annotations.Nullable;
 
@@ -12,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /** A shared, byte-bounded cache for the CPU tiles used by Photonics voxel baking. */
 final class IrisTextureTileCache {
@@ -26,13 +28,11 @@ final class IrisTextureTileCache {
     private final AtomicLong misses = new AtomicLong();
     private final AtomicLong evictions = new AtomicLong();
 
-    private long generation;
+    private volatile long generation;
     private long reservedCpuBytes;
 
     long generation() {
-        synchronized (this) {
-            return generation;
-        }
+        return generation;
     }
 
     int sample(
@@ -60,7 +60,7 @@ final class IrisTextureTileCache {
         synchronized (this) {
             while (true) {
                 if (textureGeneration != generation)
-                    throw new IllegalStateException("Texture atlas belongs to a stale resource generation");
+                    throw new StaleResourceGenerationException("Texture atlas belongs to a stale resource generation");
 
                 tile = tiles.get(key);
                 if (tile != null) {
@@ -109,7 +109,10 @@ final class IrisTextureTileCache {
             Thread.currentThread().interrupt();
             throw new IgnoredInterruptedException();
         } catch (ExecutionException e) {
-            throw new IllegalStateException("Could not read Photonics atlas tile", e.getCause());
+            Throwable cause = e.getCause();
+            if (StaleResourceGenerationException.causedBy(cause))
+                throw new StaleResourceGenerationException("Texture resources were reloaded during atlas sampling", cause);
+            throw new IllegalStateException("Could not read Photonics atlas tile", cause);
         } finally {
             release(tile);
         }
@@ -124,7 +127,7 @@ final class IrisTextureTileCache {
 
         if (cause != null || pixels == null || !current) {
             if (tiles.remove(tile.key, tile)) accessOrder.remove(tile.key);
-            if (cause == null) cause = new IllegalStateException("Atlas was reloaded during texture readback");
+            if (cause == null) cause = new StaleResourceGenerationException("Atlas was reloaded during texture readback");
             tile.pixels.completeExceptionally(cause);
             releaseReservation(tile);
         } else {
@@ -175,6 +178,7 @@ final class IrisTextureTileCache {
         tiles.clear();
         accessOrder.clear();
         notifyAll();
+        readbackBudget.wakeWaiters();
         return generation;
     }
 
@@ -248,11 +252,21 @@ final class IrisTextureTileCache {
             this.maximumBytes = maximumBytes;
         }
 
-        synchronized void acquire(int bytes) throws InterruptedException {
+        synchronized void acquire(int bytes, BooleanSupplier stillCurrent) throws InterruptedException {
             if (bytes > maximumBytes)
                 throw new IllegalArgumentException("Texture tile exceeds the readback budget");
-            while (usedBytes + bytes > maximumBytes) wait();
+            while (usedBytes + bytes > maximumBytes) {
+                if (!stillCurrent.getAsBoolean())
+                    throw new StaleResourceGenerationException("Texture resources changed while waiting for readback memory");
+                wait();
+            }
+            if (!stillCurrent.getAsBoolean())
+                throw new StaleResourceGenerationException("Texture resources changed before readback memory was reserved");
             usedBytes += bytes;
+        }
+
+        synchronized void wakeWaiters() {
+            notifyAll();
         }
 
         synchronized void release(int bytes) {

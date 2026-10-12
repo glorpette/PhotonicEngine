@@ -12,12 +12,12 @@ public class ResourceReloaderListener {
 
     static {
         ((ReloadableResourceManager) Minecraft.getInstance().getResourceManager())
-                .registerReloadListener((sharedState, applyExecutor, preparationBarrier, executor2) ->
+                .registerReloadListener((sharedState, prepareExecutor, preparationBarrier, applyExecutor) ->
                         preparationBarrier.wait(Unit.INSTANCE)
-                                .thenRun(() -> {
+                                .thenRunAsync(() -> {
                                     for (var runnable : DEPENDANTS)
                                         runnable.run();
-                                }));
+                                }, applyExecutor));
     }
 
     public static void add(Runnable runnable) {

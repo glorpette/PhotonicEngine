@@ -1,8 +1,10 @@
 package at.redi2go.photonics.common.iris;
 
 import at.redi2go.photonics.common.ResourceReloaderListener;
+import at.redi2go.photonics.game.Disposable;
 import at.redi2go.photonics.engine.Photonics;
 import at.redi2go.photonics.engine.rendering.world.IgnoredInterruptedException;
+import at.redi2go.photonics.engine.rendering.world.StaleResourceGenerationException;
 import at.redi2go.photonics.engine.rendering.world.bakery.texture.AtlasDownloader;
 import at.redi2go.photonics.engine.rendering.world.bakery.texture.AtlasTexture;
 import at.redi2go.photonics.engine.rendering.world.bakery.texture.CpuTexture;
@@ -25,14 +27,18 @@ import java.nio.IntBuffer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
 
 /** Reads only the small texture regions needed while baking blocks. */
 public class IrisAtlasDownloader implements AtlasDownloader {
-    private static final IrisTextureTileCache TILE_CACHE = new IrisTextureTileCache();
+    private final IrisTextureTileCache tileCache = new IrisTextureTileCache();
 
     private final TextureManager textureManager = Minecraft.getInstance().getTextureManager();
     private final java.util.concurrent.ConcurrentHashMap<Id, CompletableFuture<AtlasTexture>> cache =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final Set<Runnable> reloadListeners = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Object lifecycleLock = new Object();
     private final Runnable clearCacheListener = this::clearCache;
     private volatile boolean closed;
 
@@ -42,26 +48,59 @@ public class IrisAtlasDownloader implements AtlasDownloader {
 
     private void clearCache() {
         if (Photonics.LOGGER.isDebugEnabled())
-            Photonics.LOGGER.debug("Clearing Photonics atlas tiles ({})", TILE_CACHE.stats());
-        TILE_CACHE.clear();
-        cache.values().forEach(future -> future.cancel(true));
-        cache.clear();
+            Photonics.LOGGER.debug("Clearing Photonics atlas tiles ({})", tileCache.stats());
+
+        java.util.List<CompletableFuture<AtlasTexture>> stale;
+        synchronized (lifecycleLock) {
+            tileCache.clear();
+            stale = java.util.List.copyOf(cache.values());
+            cache.clear();
+        }
+        var reloadFailure = new StaleResourceGenerationException("Texture resources were reloaded");
+        stale.forEach(future -> future.completeExceptionally(reloadFailure));
+
+        for (var listener : reloadListeners) {
+            try {
+                listener.run();
+            } catch (Throwable failure) {
+                Photonics.LOGGER.error("A Photonics resource reload listener failed", failure);
+            }
+        }
     }
 
     private CompletableFuture<AtlasTexture> downloadTexture(Id atlasId) {
-        if (closed)
-            return CompletableFuture.failedFuture(new IllegalStateException("Atlas downloader is closed"));
+        synchronized (lifecycleLock) {
+            if (closed)
+                return CompletableFuture.failedFuture(new IllegalStateException("Atlas downloader is closed"));
 
-        long generation = TILE_CACHE.generation();
-        return cache.computeIfAbsent(atlasId, id -> resolveAtlas(id, generation));
+            long generation = tileCache.generation();
+            return cache.computeIfAbsent(atlasId, id -> resolveAtlas(id, generation));
+        }
+    }
+
+    @Override
+    public long generation() {
+        return tileCache.generation();
+    }
+
+    @Override
+    public Disposable onResourceReload(Runnable listener) {
+        reloadListeners.add(listener);
+        return () -> reloadListeners.remove(listener);
+    }
+
+    private void requireCurrentGeneration(long generation) {
+        if (closed)
+            throw new IllegalStateException("Atlas downloader is closed");
+        if (generation != tileCache.generation())
+            throw new StaleResourceGenerationException("Atlas belongs to a stale resource generation");
     }
 
     private CompletableFuture<AtlasTexture> resolveAtlas(Id atlasId, long generation) {
         var result = new CompletableFuture<AtlasTexture>();
         Minecraft.getInstance().execute(() -> {
             try {
-                if (closed || generation != TILE_CACHE.generation())
-                    throw new IllegalStateException("Atlas belongs to a stale resource generation");
+                requireCurrentGeneration(generation);
 
                 AbstractTexture atlas = textureManager.getTexture((Identifier) (Object) atlasId);
                 GpuTexture albedoGpu = atlas.getTexture();
@@ -81,7 +120,10 @@ public class IrisAtlasDownloader implements AtlasDownloader {
                         TextureData.DEFAULT_SPECULAR
                 );
 
-                result.complete(new AtlasTexture(albedo, normal, specular, stableHash(atlasId, generation)));
+                synchronized (lifecycleLock) {
+                    requireCurrentGeneration(generation);
+                    result.complete(new AtlasTexture(albedo, normal, specular, stableHash(atlasId, generation)));
+                }
             } catch (Throwable failure) {
                 result.completeExceptionally(failure);
             }
@@ -119,9 +161,9 @@ public class IrisAtlasDownloader implements AtlasDownloader {
             int height,
             int byteSize
     ) {
-        IrisTextureTileCache.ReadbackBudget budget = TILE_CACHE.readbackBudget();
+        IrisTextureTileCache.ReadbackBudget budget = tileCache.readbackBudget();
         try {
-            budget.acquire(byteSize);
+            budget.acquire(byteSize, () -> !closed && generation == tileCache.generation());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IgnoredInterruptedException();
@@ -135,42 +177,48 @@ public class IrisAtlasDownloader implements AtlasDownloader {
 
         try {
             Minecraft.getInstance().execute(() -> {
-                if (closed || generation != TILE_CACHE.generation()) {
-                    result.completeExceptionally(new IllegalStateException("Texture tile belongs to a stale generation"));
+                if (closed || generation != tileCache.generation()) {
+                    result.completeExceptionally(new StaleResourceGenerationException("Texture tile belongs to a stale generation"));
                     releaseBudget.run();
                     return;
                 }
 
-                GpuBuffer output = null;
+                var output = new AtomicReference<GpuBuffer>();
                 var outputClosed = new AtomicBoolean();
+                Runnable closeOutput = () -> {
+                    GpuBuffer outputBuffer = output.get();
+                    if (outputBuffer != null && outputClosed.compareAndSet(false, true)) {
+                        try {
+                            outputBuffer.close();
+                        } catch (Throwable closeFailure) {
+                            Photonics.LOGGER.debug("Could not close Photonics texture readback buffer", closeFailure);
+                        }
+                    }
+                };
                 try {
                     var device = RenderSystem.getDevice();
-                    output = device.createBuffer(
+                    GpuBuffer outputBuffer = device.createBuffer(
                             () -> "Photonics voxelization texture tile",
                             GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_MAP_READ,
                             byteSize
                     );
-                    GpuBuffer outputBuffer = output;
-                    Runnable closeOutput = () -> {
-                        if (outputClosed.compareAndSet(false, true)) {
-                            try {
-                                outputBuffer.close();
-                            } catch (Throwable closeFailure) {
-                                Photonics.LOGGER.debug("Could not close Photonics texture readback buffer", closeFailure);
-                            }
-                        }
-                    };
+                    output.set(outputBuffer);
 
                     FrontendCommandEncoder encoder = (FrontendCommandEncoder) device.createCommandEncoder();
+                    requireCurrentGeneration(generation);
                     encoder.copyTextureToBuffer(texture, outputBuffer, 0, () -> {
                         try {
+                            requireCurrentGeneration(generation);
                             int[] pixels;
                             try (var mapped = outputBuffer.map(true, false)) {
                                 IntBuffer buffer = mapped.data().asIntBuffer();
                                 pixels = new int[byteSize / Integer.BYTES];
                                 buffer.get(pixels);
                             }
-                            result.complete(pixels);
+                            synchronized (lifecycleLock) {
+                                requireCurrentGeneration(generation);
+                                result.complete(pixels);
+                            }
                         } catch (Throwable failure) {
                             result.completeExceptionally(failure);
                         } finally {
@@ -179,13 +227,7 @@ public class IrisAtlasDownloader implements AtlasDownloader {
                         }
                     }, 0, x, y, width, height);
                 } catch (Throwable failure) {
-                    if (output != null) {
-                        try {
-                            output.close();
-                        } catch (Throwable closeFailure) {
-                            failure.addSuppressed(closeFailure);
-                        }
-                    }
+                    closeOutput.run();
                     result.completeExceptionally(failure);
                     releaseBudget.run();
                 }
@@ -217,6 +259,8 @@ public class IrisAtlasDownloader implements AtlasDownloader {
             Thread.currentThread().interrupt();
             throw new IgnoredInterruptedException();
         } catch (ExecutionException e) {
+            if (StaleResourceGenerationException.causedBy(e.getCause()))
+                throw new StaleResourceGenerationException("Atlas changed while Photonics was meshing", e.getCause());
             throw new IllegalArgumentException(e);
         }
     }
@@ -225,7 +269,15 @@ public class IrisAtlasDownloader implements AtlasDownloader {
     public void close() {
         ResourceReloaderListener.remove(clearCacheListener);
         closed = true;
-        clearCache();
+        java.util.List<CompletableFuture<AtlasTexture>> stale;
+        synchronized (lifecycleLock) {
+            tileCache.clear();
+            stale = java.util.List.copyOf(cache.values());
+            cache.clear();
+        }
+        var closeFailure = new IllegalStateException("Atlas downloader is closed");
+        stale.forEach(future -> future.completeExceptionally(closeFailure));
+        reloadListeners.clear();
     }
 
     private final class TiledCpuTexture implements CpuTexture {
@@ -248,7 +300,7 @@ public class IrisAtlasDownloader implements AtlasDownloader {
             if (width <= 0 || height <= 0) return defaultValue;
             int pixelX = org.joml.Math.clamp(org.joml.Math.round(u * (width - 0.5f)), 0, width - 1);
             int pixelY = org.joml.Math.clamp(org.joml.Math.round(v * (height - 0.5f)), 0, height - 1);
-            return TILE_CACHE.sample(
+            return tileCache.sample(
                     texture,
                     generation,
                     pixelX,

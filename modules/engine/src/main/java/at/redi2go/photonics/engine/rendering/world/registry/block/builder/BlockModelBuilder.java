@@ -52,7 +52,12 @@ public class BlockModelBuilder implements VoxelConsumer {
         builder.insertEntry(tempPos, tempVoxelData);
     }
 
-    public @WeakValue @Nullable BlockModelImpl build(long vertexHash, BlockRegistry blockRegistry, BlockModelRegistry registry) {
+    public @WeakValue @Nullable BlockModelImpl build(
+            long vertexHash,
+            long resourceGeneration,
+            BlockRegistry blockRegistry,
+            BlockModelRegistry registry
+    ) {
         if (this.parts.isEmpty()) return null;
 
         ImmutableList.Builder<BlockPartImpl> parts = ImmutableList.builder();
@@ -64,7 +69,7 @@ public class BlockModelBuilder implements VoxelConsumer {
             parts.add(new BlockPartImpl(offset, buildPart));
         }
 
-        return new BlockModelImpl(vertexHash, parts.build(), registry);
+            return new BlockModelImpl(vertexHash, resourceGeneration, parts.build(), registry);
     }
 
     private static int correctVoxelPos(int component) {

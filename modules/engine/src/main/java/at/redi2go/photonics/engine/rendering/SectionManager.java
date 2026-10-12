@@ -44,6 +44,7 @@ public class SectionManager implements RenderingComponent {
 
     private final IntSupplier renderDistanceSupplier;
     private long remeshCount = 0;
+    private volatile boolean closed;
 
     public SectionManager(IntSupplier renderDistanceSupplier) {
         this.renderDistanceSupplier = renderDistanceSupplier;
@@ -205,9 +206,16 @@ public class SectionManager implements RenderingComponent {
     }
 
     public void requestRetry(Vector3i sectionPos) {
+        if (closed) return;
         var key = new Vector3i(sectionPos);
         if (queuedRetries.add(key))
             retryQueue.add(key);
+    }
+
+    public void requestRetryAll() {
+        if (closed) return;
+        for (var sectionPos : notEmptySections)
+            requestRetry(sectionPos);
     }
 
     private Optional<SectionCopy> createCopy(Vector3i sectionPos, ILevel level) {
@@ -265,6 +273,7 @@ public class SectionManager implements RenderingComponent {
 
     @Override
     public void close() {
+        closed = true;
         retryQueue.clear();
         queuedRetries.clear();
         pendingCopyPositions.clear();
