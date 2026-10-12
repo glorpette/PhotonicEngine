@@ -1,6 +1,7 @@
 package at.redi2go.photonics.common.iris;
 
 import at.redi2go.photonics.engine.iris.IrisManager;
+import at.redi2go.photonics.common.meshing.BlockEntityRenderQueue;
 import at.redi2go.photonics.mixins.MixinOrder;
 import net.minecraft.client.renderer.LevelRenderer;
 import org.spongepowered.asm.mixin.Mixin;
@@ -16,6 +17,7 @@ public abstract class LevelRendererMixin {
             order = MixinOrder.EARLY
     )
     public void onRender(CallbackInfo ci) {
+        BlockEntityRenderQueue.drainFrame();
         IrisManager.onFrameBegin();
     }
 }

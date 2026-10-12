@@ -1,6 +1,7 @@
 package at.redi2go.photonics.common.iris.pipeline;
 
 import at.redi2go.photonics.common.iris.IrisAtlasDownloader;
+import at.redi2go.photonics.common.meshing.BlockEntityRenderQueue;
 import at.redi2go.photonics.common.iris.pipeline.renderer.DeferredIrisPassAction;
 import at.redi2go.photonics.common.iris.pipeline.renderer.composite.PhCompositeRenderer;
 import at.redi2go.photonics.engine.Photonics;
@@ -39,6 +40,8 @@ public abstract class IrisPipelineManagerMixin implements IrisPipelineManagerExt
     @Inject(method = "preparePipeline", at = @At("HEAD"))
     private void preparePipeline(NamespacedId currentDimension, CallbackInfoReturnable<WorldRenderingPipeline> cir) {
         if (IrisManager.hasPipeline()) return;
+
+        BlockEntityRenderQueue.start();
 
         at.redi2go.photonics.engine.rendering.world.bakery.BlockMesher.REGISTRY.addDefault(new at.redi2go.photonics.common.meshing.MinecraftBlockMesher());
 
@@ -102,6 +105,7 @@ public abstract class IrisPipelineManagerMixin implements IrisPipelineManagerExt
 
     @Inject(method = "destroyPipeline", at = @At("HEAD"))
     private void destroyEverything(CallbackInfo ci) {
+        BlockEntityRenderQueue.stop();
         if (IrisManager.hasPipeline()) {
             IrisManager.destroyEverything();
             renderers.clear();

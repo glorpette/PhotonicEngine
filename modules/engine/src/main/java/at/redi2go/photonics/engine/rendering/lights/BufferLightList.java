@@ -49,6 +49,8 @@ public class BufferLightList extends AbstractLightList {
         );
 
         this.mappingView = mappingHeap.allocateOrThrow(mappingHeap.capacity());
+
+        startCompiler();
     }
 
     @Override

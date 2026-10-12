@@ -42,12 +42,12 @@ public final class GlTexture1D extends GlTexture {
     }
 
     @Override
-    protected void texImageImpl(int layer, int mipLevel, @Nullable ByteBuffer pixels) {
+    protected void texImageImpl(int layer, int mipLevel, Vector3ic size, @Nullable ByteBuffer pixels) {
         GL11.glTexImage1D(
                 GL11.GL_TEXTURE_1D,
                 mipLevel,
                 GlConstExt.toGlInternalId(format),
-                ph$getWidth(mipLevel),
+                size.x(),
                 0,
                 GlConstExt.toGlTexelFormatId(format.getTexelFormat()),
                 GlConstExt.toGlTexelTypeId(format.getTexelType()),
@@ -57,10 +57,9 @@ public final class GlTexture1D extends GlTexture {
 
     @Override
     protected void texSubDataImpl(ByteBuffer byteBuffer, TextureFormat bufferFormat, int layer, int mipLevel, Vector3ic size, Vector3ic offset) {
-        GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, size.x());
+        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, 1);
         GlStateManager._pixelStore(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GlStateManager._pixelStore(GL11.GL_UNPACK_SKIP_ROWS, 0);
-        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, bufferFormat.getTexelFormat().getComponentCount());
 
         GL11.glTexSubImage1D(
                 GL11.GL_TEXTURE_1D,
@@ -71,5 +70,6 @@ public final class GlTexture1D extends GlTexture {
                 GlConstExt.toGlTexelTypeId(bufferFormat.getTexelType()),
                 byteBuffer
         );
+        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, 4);
     }
 }

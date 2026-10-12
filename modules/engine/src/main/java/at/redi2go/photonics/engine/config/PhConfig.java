@@ -192,6 +192,19 @@ public class PhConfig {
         INSTANCE.multiThreadingEnabled = enabled;
     }
 
+    public static int getMaxRaytraceDistance() {
+        return Math.max(1, Math.min(32, INSTANCE.maxRaytraceDistance));
+    }
+
+    public static int getMaxRaytraceSections() {
+        return Math.max(64, Math.min(1_024, INSTANCE.maxRaytraceSections));
+    }
+
+    public static long getMaxRaytraceWorldBytes() {
+        int mib = Math.max(64, Math.min(512, INSTANCE.maxRaytraceWorldMib));
+        return (long) mib << 20;
+    }
+
     public static LightRegistry getLightRegistry() {
         return lightRegistry;
     }

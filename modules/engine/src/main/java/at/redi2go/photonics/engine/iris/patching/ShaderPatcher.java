@@ -146,13 +146,16 @@ public class ShaderPatcher {
     }
 
     private static void wipeDebug() {
-        try(var debugFiles = Files.list(PATCHED_DEBUG_PATH)) {
-            var listed = debugFiles.toList();
+        try {
+            Files.createDirectories(PATCHED_DEBUG_PATH);
+            try (var debugFiles = Files.list(PATCHED_DEBUG_PATH)) {
+                var listed = debugFiles.toList();
 
-            for (var file : listed)
-                Files.delete(file);
+                for (var file : listed)
+                    Files.delete(file);
+            }
         } catch (IOException e) {
-            Photonics.LOGGER.error("An exception was thrown while wiping Photonics's debug output");
+            Photonics.LOGGER.error("An exception was thrown while wiping Photonics's debug output", e);
         }
     }
 

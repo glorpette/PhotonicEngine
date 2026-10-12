@@ -61,13 +61,13 @@ public final class GlTexture2D extends GlTexture {
     }
 
     @Override
-    protected void texImageImpl(int layer, int mipLevel, @Nullable ByteBuffer pixels) {
+    protected void texImageImpl(int layer, int mipLevel, Vector3ic size, @Nullable ByteBuffer pixels) {
         GlStateManager._texImage2D(
                 GL11.GL_TEXTURE_2D,
                 mipLevel,
                 GlConstExt.toGlInternalId(format),
-                ph$getWidth(mipLevel),
-                ph$getHeight(mipLevel),
+                size.x(),
+                size.y(),
                 0,
                 GlConstExt.toGlTexelFormatId(format.getTexelFormat()),
                 GlConstExt.toGlTexelTypeId(format.getTexelType()),
@@ -77,10 +77,9 @@ public final class GlTexture2D extends GlTexture {
 
     @Override
     protected void texSubDataImpl(ByteBuffer byteBuffer, TextureFormat bufferFormat, int layer, int mipLevel, Vector3ic size, Vector3ic offset) {
-        GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, size.x());
+        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, 1);
         GlStateManager._pixelStore(GL11.GL_UNPACK_SKIP_PIXELS, 0);
         GlStateManager._pixelStore(GL11.GL_UNPACK_SKIP_ROWS, 0);
-        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, bufferFormat.getTexelFormat().getComponentCount());
 
         GL11.glTexSubImage2D(
                 GL11.GL_TEXTURE_2D,
@@ -93,6 +92,7 @@ public final class GlTexture2D extends GlTexture {
                 GlConstExt.toGlTexelTypeId(bufferFormat.getTexelType()),
                 byteBuffer
         );
+        GlStateManager._pixelStore(GL11.GL_UNPACK_ALIGNMENT, 4);
     }
 
     private class StateAccess2D extends StateAccessImpl {
@@ -146,7 +146,8 @@ public final class GlTexture2D extends GlTexture {
             GlStateManager.clearGlErrors();
             dsa.invokeBindFrameBufferTextures(readFbo, handle, 0, mipLevel, GL30.GL_READ_FRAMEBUFFER);
             GlStateManager._glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, ((GlBufferAccessor) dstBuffer).getHandle());
-            GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, copySize.x());
+            GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, 0);
+            GlStateManager._pixelStore(GL11.GL_PACK_ALIGNMENT, 1);
 
             GlStateManager._readPixels(
                     srcOffset.x(),
@@ -160,8 +161,10 @@ public final class GlTexture2D extends GlTexture {
 
             RenderSystem.queueFencedTask(completionCallback);
             GlStateManager._glFramebufferTexture2D(GL30.GL_READ_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, 0, mipLevel);
-            GlStateManager._glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, 0);
+            GlStateManager._glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, readFbo);
             GlStateManager._glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
+            GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, 0);
+            GlStateManager._pixelStore(GL11.GL_PACK_ALIGNMENT, 4);
             int o = GlStateManager._getError();
             if (o != 0) {
                 throw new IllegalStateException("Couldn't perform copyTobuffer for texture " + label + ": GL error " + o);

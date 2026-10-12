@@ -25,6 +25,8 @@
   "depends": {
     "fabricloader": ">=${fabric_loader_version}",
     "minecraft": "~${minecraft_version}",
-    "java": ">=25"
+    "java": ">=25",
+    "iris": "${iris_version_range}",
+    "sodium": "${sodium_version_range}"
   }
 }

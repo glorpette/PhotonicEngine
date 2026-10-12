@@ -29,6 +29,15 @@ public abstract class BlockNodeObject extends VoxelTreeNode implements BlockObje
         this.ref = new Reference(blockRegistry);
     }
 
+    protected BlockNodeObject(
+            BlockRegistry blockRegistry,
+            int depth,
+            VoxelTreeEntry[] entries
+    ) {
+        super(depth, entries);
+        this.ref = new Reference(blockRegistry);
+    }
+
 
     protected abstract boolean useChildMask();
 
@@ -36,10 +45,7 @@ public abstract class BlockNodeObject extends VoxelTreeNode implements BlockObje
 
     @Override
     public void allocate(WorldAllocator allocator) {
-        var memory = ref.setMemory(() -> allocator.allocateEntryList(useChildMask(), extraFieldCount()));
-        this.childMask = writeEntries(memory);
-
-        memory.upload();
+        ref.allocate(allocator);
     }
 
     @Override
@@ -81,6 +87,16 @@ public abstract class BlockNodeObject extends VoxelTreeNode implements BlockObje
     }
 
     @Override
+    public void enqueueIfUnused() {
+        ref.enqueueIfUnused();
+    }
+
+    @Override
+    public void discardIfUnused() {
+        ref.discardIfUnused();
+    }
+
+    @Override
     public void close() {
         ref.close();
     }
@@ -88,6 +104,16 @@ public abstract class BlockNodeObject extends VoxelTreeNode implements BlockObje
     private class Reference extends InnerWorldObject<VoxelEntryListMemory> {
         public Reference(BlockRegistry registry) {
             super(registry);
+        }
+
+        public void allocate(WorldAllocator allocator) {
+            setMemory(
+                    () -> allocator.allocateEntryList(useChildMask(), extraFieldCount()),
+                    memory -> {
+                        BlockNodeObject.this.childMask = BlockNodeObject.this.writeEntries(memory);
+                        memory.upload();
+                    }
+            );
         }
 
         @Override

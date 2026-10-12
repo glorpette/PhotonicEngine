@@ -28,6 +28,7 @@ dependencies {
     implementation(sharedLibs.dataFixerUpper)
     implementation(sharedLibs.brigadier)
     implementation(sharedLibs.fastutil.concurrent.wrapper)
+    compileOnly(sharedLibs.lwjgl)
 
     implementation(projects.modules.game)
     implementation(engineLibs.slf4j.api)

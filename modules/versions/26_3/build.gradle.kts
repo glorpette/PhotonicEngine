@@ -25,7 +25,7 @@ photonics {
         implementation(mainLibs.glsl.transformer)
         implementation(mainLibs.jcpp)
 
-        modImplementation(mainLibs.sodium)
-        modImplementation(mainLibs.iris)
+        implementation(mainLibs.sodium)
+        implementation(mainLibs.iris)
     }
 }

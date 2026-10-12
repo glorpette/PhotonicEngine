@@ -28,22 +28,45 @@ import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.UvMapping;
 import net.minecraft.client.resources.model.geometry.ItemQuads;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.client.resources.model.sprite.SpriteGetter;
 import net.minecraft.client.resources.model.sprite.SpriteId;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Quaternionf;
 
 import java.util.List;
+import java.util.concurrent.Callable;
 
 public class BlockBuilderBufferSource implements SubmitNodeCollector {
     private static final Id BLOCK_ATLAS = (Id) (Object) TextureAtlas.LOCATION_BLOCKS;
+    private static final ThreadLocal<BlockBuilderBufferSource> ACTIVE_CAPTURE = new ThreadLocal<>();
     private final QuadInstance quadInstance = new QuadInstance();
     private BlockBuilder blockBuilder;
+
+    public static VertexConsumer getEmfTextureOverrideBuffer(RenderType renderType) {
+        BlockBuilderBufferSource source = ACTIVE_CAPTURE.get();
+        if (source == null || source.blockBuilder == null) return null;
+
+        source.useTextureFromRenderType(renderType);
+        return (VertexConsumer) source.blockBuilder;
+    }
+
+    public <T> T withActiveCapture(Callable<T> capture) throws Exception {
+        BlockBuilderBufferSource previous = ACTIVE_CAPTURE.get();
+        ACTIVE_CAPTURE.set(this);
+        try {
+            return capture.call();
+        } finally {
+            if (previous == null) ACTIVE_CAPTURE.remove();
+            else ACTIVE_CAPTURE.set(previous);
+        }
+    }
 
     public void setBlockBuilder(BlockBuilder blockBuilder) {
         this.blockBuilder = blockBuilder;
@@ -74,36 +97,28 @@ public class BlockBuilderBufferSource implements SubmitNodeCollector {
     public <S> void submitModel(Model<? super S> model, S state, PoseStack poseStack, RenderType renderType, int light, int overlay, int tint, UvMapping uvMapping, int i) {
         if (blockBuilder == null) return;
         useTextureFromRenderType(renderType);
-        model.setupAnim(state);
-        model.renderToBuffer(poseStack, (VertexConsumer) blockBuilder, light, overlay, tint);
-        model.resetPose();
+        renderModel(model, state, poseStack, light, overlay, tint);
     }
 
     @Override
     public <S> void submitModel(Model<? super S> model, S state, PoseStack poseStack, RenderType renderType, int light, int overlay, int tint) {
         if (blockBuilder == null) return;
         useTextureFromRenderType(renderType);
-        model.setupAnim(state);
-        model.renderToBuffer(poseStack, (VertexConsumer) blockBuilder, light, overlay, tint);
-        model.resetPose();
+        renderModel(model, state, poseStack, light, overlay, tint);
     }
 
     @Override
     public <S> void submitModel(Model<? super S> model, S state, PoseStack poseStack, Identifier texture, int light, int overlay, int tint) {
         if (blockBuilder == null) return;
         blockBuilder.useAtlas((Id) (Object) texture);
-        model.setupAnim(state);
-        model.renderToBuffer(poseStack, (VertexConsumer) blockBuilder, light, overlay, tint);
-        model.resetPose();
+        renderModel(model, state, poseStack, light, overlay, tint);
     }
 
     @Override
     public <S> void submitModel(Model<S> model, S state, PoseStack poseStack, int light, int overlay, int tint, SpriteId spriteId, SpriteGetter spriteGetter, int i) {
         if (blockBuilder == null) return;
         blockBuilder.useAtlas((Id) (Object) spriteId.atlasLocation());
-        model.setupAnim(state);
-        model.renderToBuffer(poseStack, (VertexConsumer) blockBuilder, light, overlay, tint);
-        model.resetPose();
+        renderModel(model, state, poseStack, light, overlay, tint);
     }
 
     @Override
@@ -125,10 +140,13 @@ public class BlockBuilderBufferSource implements SubmitNodeCollector {
     public void submitBlockModel(PoseStack poseStack, RenderType renderType, List<BlockStateModelPart> parts, int[] tint, int light, int overlay, int order) {
         if (blockBuilder == null) return;
         useTextureFromRenderType(renderType);
+        quadInstance.setLightCoords(light);
+        quadInstance.setOverlayCoords(overlay);
+        var pose = poseStack.last();
         for (BlockStateModelPart part : parts) {
-            for (var quad : part.getQuads(null)) {
-                ((VertexConsumer) blockBuilder).putBakedQuad(poseStack.last(), quad, quadInstance);
-            }
+            putQuads(pose, part.getQuads(null), tint, -1);
+            for (Direction direction : Direction.values())
+                putQuads(pose, part.getQuads(direction), tint, -1);
         }
     }
 
@@ -142,6 +160,14 @@ public class BlockBuilderBufferSource implements SubmitNodeCollector {
 
     @Override
     public void submitItem(PoseStack poseStack, ItemDisplayContext itemDisplayContext, int light, int overlay, int tint, int[] tintLayers, ItemQuads itemQuads, ItemStackRenderState.FoilType foilType) {
+        if (blockBuilder == null || itemQuads.isEmpty()) return;
+        quadInstance.setLightCoords(light);
+        quadInstance.setOverlayCoords(overlay);
+        var pose = poseStack.last();
+        for (BakedQuad quad : itemQuads.all()) {
+            blockBuilder.useAtlas((Id) (Object) quad.materialInfo().sprite().atlasLocation());
+            putQuad(pose, quad, tintLayers, tint);
+        }
     }
 
     @Override
@@ -181,5 +207,28 @@ public class BlockBuilderBufferSource implements SubmitNodeCollector {
 
     @Override
     public void submitLeash(PoseStack poseStack, EntityRenderState.LeashState leashState) {
+    }
+
+    private void putQuads(PoseStack.Pose pose, List<BakedQuad> quads, int[] tintLayers, int defaultTint) {
+        for (BakedQuad quad : quads)
+            putQuad(pose, quad, tintLayers, defaultTint);
+    }
+
+    private void putQuad(PoseStack.Pose pose, BakedQuad quad, int[] tintLayers, int defaultTint) {
+        int tintIndex = quad.materialInfo().tintIndex();
+        int color = tintLayers != null && tintIndex >= 0 && tintIndex < tintLayers.length
+                ? tintLayers[tintIndex]
+                : defaultTint;
+        quadInstance.setColor(color);
+        ((VertexConsumer) blockBuilder).putBakedQuad(pose, quad, quadInstance);
+    }
+
+    private <S> void renderModel(Model<? super S> model, S state, PoseStack poseStack, int light, int overlay, int tint) {
+        try {
+            model.setupAnim(state);
+            model.renderToBuffer(poseStack, (VertexConsumer) blockBuilder, light, overlay, tint);
+        } finally {
+            model.resetPose();
+        }
     }
 }

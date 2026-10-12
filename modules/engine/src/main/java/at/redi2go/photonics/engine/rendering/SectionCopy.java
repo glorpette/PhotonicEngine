@@ -56,12 +56,18 @@ public class SectionCopy implements PrioritizedTask, IChunkSection {
     }
 
     public void forEachBlock(TriConsumer<Vector3i, IBlockPos, IBlockState> blockConsumer) {
+        forEachBlock(() -> true, blockConsumer);
+    }
+
+    public void forEachBlock(java.util.function.BooleanSupplier shouldContinue, TriConsumer<Vector3i, IBlockPos, IBlockState> blockConsumer) {
         Vector3i chunkOffset = new Vector3i();
         Vector3i sectionBlockPos = blockPos();
 
         for (int px = 0; px < 16; px++) {
             for (int py = 0; py < 16; py++) {
                 for (int pz = 0; pz < 16; pz++) {
+                    if (!shouldContinue.getAsBoolean()) return;
+
                     IBlockPos blockPos = IBlockPos.of(
                             sectionBlockPos.x + px,
                             sectionBlockPos.y + py,

@@ -23,6 +23,7 @@ public class PhConfigWatchThread extends Thread {
 
     private PhConfigWatchThread() {
         super("photonics-config-watcher");
+        setDaemon(true);
     }
 
     public static void beginSave() {

@@ -137,9 +137,9 @@ fun typeFromImport(vararg parts: String): Type {
 
 val MixinType = typeFromImport("org.spongepowered.asm.mixin.Mixin")
 
-val OptionalType = typeFromImport("at.redi2go.photonics.mixin.Optional")
-val ClientType = typeFromImport("at.redi2go.photonics.mixin.ClientSide")
-val ServerType = typeFromImport("at.redi2go.photonics.mixin.ServerSide")
+val OptionalType = typeFromImport("at.redi2go.photonics.mixins.Optional")
+val ClientType = typeFromImport("at.redi2go.photonics.mixins.Client")
+val ServerType = typeFromImport("at.redi2go.photonics.mixins.Server")
 
 val Type.javaClass: JavaClass get() = JavaClass.fromType(this)
 

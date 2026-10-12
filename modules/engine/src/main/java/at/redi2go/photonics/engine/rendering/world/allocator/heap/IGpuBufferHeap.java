@@ -15,6 +15,10 @@ public interface IGpuBufferHeap extends Disposable {
      */
     long capacity();
 
+    Stats stats();
+
+    record Stats(long capacityBytes, long allocatedBytes, long freeBytes, long largestFreeRegionBytes, long highWaterBytes, long failedAllocations) { }
+
     /**
      * Allocates a chunk of memory of size {@code byteSize}
      *
@@ -30,8 +34,13 @@ public interface IGpuBufferHeap extends Disposable {
      */
     default MemoryView allocateOrThrow(long byteSize) {
         var result = allocate(byteSize);
-        if (result == null)
-            throw new OutOfMemoryError("Could not allocate " + byteSize + " bytes");
+        if (result == null) {
+            Stats stats = stats();
+            throw new OutOfMemoryError("Could not allocate " + byteSize + " bytes from world buffer (capacity=" +
+                    stats.capacityBytes() + ", allocated=" + stats.allocatedBytes() + ", free=" + stats.freeBytes() +
+                    ", largestFreeRegion=" + stats.largestFreeRegionBytes() + ", highWater=" +
+                    stats.highWaterBytes() + ", failedAllocations=" + stats.failedAllocations() + ")");
+        }
 
         return result;
     }
@@ -51,8 +60,13 @@ public interface IGpuBufferHeap extends Disposable {
      */
     default IGpuBufferHeap allocateHeapOrThrow(long byteSize) {
         var result = allocateHeap(byteSize);
-        if (result == null)
-            throw new OutOfMemoryError("Could not allocate " + byteSize + " bytes");
+        if (result == null) {
+            Stats stats = stats();
+            throw new OutOfMemoryError("Could not allocate heap of " + byteSize + " bytes (capacity=" +
+                    stats.capacityBytes() + ", allocated=" + stats.allocatedBytes() + ", free=" + stats.freeBytes() +
+                    ", largestFreeRegion=" + stats.largestFreeRegionBytes() + ", highWater=" +
+                    stats.highWaterBytes() + ", failedAllocations=" + stats.failedAllocations() + ")");
+        }
 
         return result;
     }

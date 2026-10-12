@@ -26,7 +26,7 @@ public class WorldNode extends VoxelTreeNode implements Disposable {
     private final VoxelEntryListMemory memory;
 
     private final AtomicBoolean uploadRequested = new AtomicBoolean(false);
-    private boolean hasEmptyChild = false;
+    private volatile boolean hasEmptyChild = false;
 
     private long childMask = 0;
 
@@ -180,6 +180,8 @@ public class WorldNode extends VoxelTreeNode implements Disposable {
 
             var ignored = replaceEntry(i, worldNode.removeEmpty());
         }
+
+        hasEmptyChild = false;
 
         if (!isEmpty()) return this;
 

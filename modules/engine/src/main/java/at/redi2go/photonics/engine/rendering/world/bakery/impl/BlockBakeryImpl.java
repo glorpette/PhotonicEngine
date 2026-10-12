@@ -23,11 +23,14 @@ import org.joml.Vector3i;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ArrayBlockingQueue;
 
 public class BlockBakeryImpl implements BlockBakery {
-    private static final Queue<int[]> MESH_ARRAYS = new ConcurrentLinkedQueue<>();
+    private static final int MAX_POOLED_MESH_ARRAY_LENGTH = 16_384;
+    private static final Queue<int[]> MESH_ARRAYS = new ArrayBlockingQueue<>(8);
     private static final int INITIAL_MESH_ARRAY_SIZE = 1024;
 
     private final AtlasDownloader atlasDownloader;
@@ -53,20 +56,25 @@ public class BlockBakeryImpl implements BlockBakery {
             IBlockAndTintGetter blockAndTintGetter
     ) {
         var builder = new MeshResultImpl(pollMeshArray());
+        boolean transferred = false;
+        try {
+            mesher.meshBlock(
+                    meshState,
+                    blockChunkOffset,
+                    pos,
+                    blockState,
+                    blockAndTintGetter,
+                    builder
+            );
 
-        mesher.meshBlock(
-                meshState,
-                blockChunkOffset,
-                pos,
-                blockState,
-                blockAndTintGetter,
-                builder
-        );
+            if (builder.vertexCount == 0) return null;
 
-        if (builder.vertexCount == 0) {
-            builder.close();
-            return null;
-        } else return builder;
+            transferred = true;
+            return builder;
+        } finally {
+            if (!transferred)
+                builder.close();
+        }
     }
 
     public class MeshResultImpl implements BlockBuilder, MeshResult {
@@ -79,6 +87,7 @@ public class BlockBakeryImpl implements BlockBakery {
 
         private int currentBlockId = -1;
         private AtlasTexture currentTexture = null;
+        private Id currentAtlas = null;
         private long currentTextureHash = 0;
 
         private int vertexCount = 0;
@@ -86,6 +95,7 @@ public class BlockBakeryImpl implements BlockBakery {
         private int vertexIndex = -1;
 
         private boolean open = true;
+        private boolean prepared = false;
 
         private final ArrayDeque<StateChange> stateChanges = new ArrayDeque<>();
 
@@ -96,6 +106,46 @@ public class BlockBakeryImpl implements BlockBakery {
         @Override
         public long vertexHash() {
             return vertexHash;
+        }
+
+        @Override
+        public void prepare() {
+            if (prepared) return;
+
+            Map<Id, AtlasTexture> textures = new HashMap<>();
+            for (var change : stateChanges) {
+                if (change instanceof TextureChange textureChange && textureChange.atlasId != null)
+                    textureChange.texture = textures.computeIfAbsent(
+                            textureChange.atlasId,
+                            atlasDownloader::get
+                    );
+            }
+
+            // Recompute the cache key now that atlas identities are known. This runs on the
+            // chunk compiler, after render-thread block-entity capture has returned.
+            long hash = 0;
+            long textureHash = 0;
+            var changes = stateChanges.iterator();
+            StateChange change = changes.hasNext() ? changes.next() : null;
+            for (int vertexOffset = 0; vertexOffset < size; vertexOffset += 6) {
+                while (change != null && change.index <= vertexOffset) {
+                    if (change instanceof TextureChange textureChange && textureChange.texture != null)
+                        textureHash = textureChange.texture.textureHash();
+                    change = changes.hasNext() ? changes.next() : null;
+                }
+
+                if (vertexOffset == 0) continue;
+                int index = vertexOffset - 6;
+                hash = hash * 31 + textureHash;
+                hash = hash * 31 + intAt(index);
+                hash = hash * 31 + intAt(index + 1);
+                hash = hash * 31 + intAt(index + 2);
+                hash = hash * 31 + intAt(index + 3);
+                hash = hash * 31 + intAt(index + 4);
+                hash = hash * 31 + intAt(index + 5);
+            }
+            vertexHash = hash;
+            prepared = true;
         }
 
         // Buffer helpers
@@ -158,15 +208,22 @@ public class BlockBakeryImpl implements BlockBakery {
 
         @Override
         public BlockBuilder useAtlas(Id id) {
-            return useTexture(atlasDownloader.get(id));
+            if (id.equals(currentAtlas)) return this;
+
+            currentAtlas = id;
+            currentTexture = null;
+            currentTextureHash = 0;
+            submitState(new TextureChange(id));
+            return this;
         }
 
         @Override
         public BlockBuilder useTexture(AtlasTexture texture) {
-            if (currentTexture == texture) return this;
+            if (currentTexture == texture && currentAtlas == null) return this;
 
             currentTexture = texture;
-            currentTextureHash = texture.hashCode();
+            currentAtlas = null;
+            currentTextureHash = texture.textureHash();
             submitState(new TextureChange(texture));
 
             return this;
@@ -351,14 +408,20 @@ public class BlockBakeryImpl implements BlockBakery {
                         voxelPos.mul(BLOCK_SIZE_INV);
                         voxelPos.sub(tri[0]);
 
-                        var baryPos = BaryPos.from(voxelPos, ba, ca, n);
-                        var textureData = sample(texture, currentBlockId, tri, baryPos);
-                        if (textureData == null) continue;
+                        var baryPos = BaryPos.from(voxelPos, ba, ca, n, rasterState.baryPos());
+                        if ((signBit(baryPos.x) | signBit(baryPos.y) | signBit(baryPos.z)) != 0) continue;
+                        float u = Math.fma(baryPos.x, tri[2].u(), Math.fma(baryPos.y, tri[1].u(), baryPos.z * tri[0].u()));
+                        float v = Math.fma(baryPos.x, tri[2].v(), Math.fma(baryPos.y, tri[1].v(), baryPos.z * tri[0].v()));
+                        int color = VoxelColor.applyTint(texture.sampleColor(u, v), tint);
+                        if (VoxelColor.a(color) == 0) continue;
 
-                        textureData = textureData.withTint(tint);
-
-                        if (VoxelColor.a(textureData.color()) != 0)
-                            consumer.acceptVoxel(x, y, z, normalIndex, textureData);
+                        consumer.acceptVoxel(
+                                x, y, z, normalIndex,
+                                currentBlockId,
+                                color,
+                                texture.sampleNormal(u, v),
+                                texture.sampleSpecular(u, v)
+                        );
                     }
                 }
             }
@@ -367,7 +430,8 @@ public class BlockBakeryImpl implements BlockBakery {
         @Override
         public void close() {
             if (open) {
-                MESH_ARRAYS.add(meshData);
+                if (meshData.length <= MAX_POOLED_MESH_ARRAY_LENGTH)
+                    MESH_ARRAYS.offer(meshData);
                 open = false;
             }
         }
@@ -392,14 +456,22 @@ public class BlockBakeryImpl implements BlockBakery {
         }
 
         private static class TextureChange extends StateChange {
-            private final AtlasTexture texture;
+            private final @Nullable Id atlasId;
+            private @Nullable AtlasTexture texture;
 
             private TextureChange(AtlasTexture texture) {
                 this.texture = texture;
+                this.atlasId = null;
+            }
+
+            private TextureChange(Id atlasId) {
+                this.atlasId = atlasId;
             }
 
             @Override
             public void apply(MeshResultImpl builder) {
+                if (texture == null)
+                    throw new IllegalStateException("Mesh result was baked before deferred textures were prepared");
                 builder.currentTexture = texture;
             }
         }

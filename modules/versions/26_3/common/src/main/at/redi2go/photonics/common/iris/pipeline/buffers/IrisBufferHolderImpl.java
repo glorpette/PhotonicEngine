@@ -9,10 +9,12 @@ import com.mojang.renderpearl.backend.opengl.GlBuffer;
 import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL31;
 import org.lwjgl.opengl.GL43;
 import org.spongepowered.asm.mixin.Mixin;
@@ -29,6 +31,7 @@ import java.util.function.Supplier;
 public abstract class IrisBufferHolderImpl implements InternalIrisBufferHolder {
     @Unique private final List<Pair<String, Supplier<IGpuBuffer>>> buffers = new ArrayList<>();
     @Unique private final Int2ObjectMap<int[]> foundBlockIndices = new Int2ObjectOpenHashMap<>();
+    @Unique private final Int2ObjectMap<int[]> foundBindingPoints = new Int2ObjectOpenHashMap<>();
 
     @Inject(
             method = "<init>",
@@ -65,18 +68,42 @@ public abstract class IrisBufferHolderImpl implements InternalIrisBufferHolder {
             return result;
         });
 
-        int bindingPointIndex = 16;
+        int[] bindingPoints = foundBindingPoints.get(shaderId);
+        if (bindingPoints == null || bindingPoints.length != buffers.size()) {
+            IntSet occupied = new IntOpenHashSet(usedBuffers);
+            bindingPoints = new int[buffers.size()];
+
+            for (int i = 0; i < buffers.size(); i++) {
+                int blockIndex = blockIndices[i];
+                if (blockIndex == GL31.GL_INVALID_INDEX) {
+                    bindingPoints[i] = -1;
+                    continue;
+                }
+
+                boolean uniform = (buffers.get(i).second().get().ph$usage() & BufferUsage.UNIFORM) != 0;
+                int bindingLimit = GL11.glGetInteger(uniform
+                        ? GL31.GL_MAX_UNIFORM_BUFFER_BINDINGS
+                        : GL43.GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS);
+                int bindingPoint = bindingLimit - 1;
+                while (bindingPoint >= 0 && occupied.contains(bindingPoint))
+                    bindingPoint--;
+
+                if (bindingPoint < 0)
+                    throw new IllegalStateException("Not enough slots to bind " + buffers.size() + " buffers for Photonics");
+
+                occupied.add(bindingPoint);
+                bindingPoints[i] = bindingPoint;
+            }
+
+            foundBindingPoints.put(shaderId, bindingPoints);
+        }
+
         for (int i = 0; i < buffers.size(); i++) {
             var bufferPair = buffers.get(i);
             var blockIndex = blockIndices[i];
             if (blockIndex == GL31.GL_INVALID_INDEX) continue;
 
-            while (usedBuffers.contains(--bindingPointIndex)) continue;
-
-            if (bindingPointIndex < 0)
-                throw new IllegalStateException("Not enough slots to bind " + buffers.size() + " buffers for Photonics");
-
-            bindBuffer(shaderId, (GlBuffer) bufferPair.second().get(), blockIndex, bindingPointIndex);
+            bindBuffer(shaderId, (GlBuffer) bufferPair.second().get(), blockIndex, bindingPoints[i]);
         }
     }
 

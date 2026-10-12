@@ -1,5 +1,8 @@
 {
   "multi_threading_enabled": false,
+  "max_raytrace_distance": 8,
+  "max_raytrace_sections": 1024,
+  "max_raytrace_world_mib": 256,
   "defines": {
     "colors": {
       "torch": "#ffa95b",

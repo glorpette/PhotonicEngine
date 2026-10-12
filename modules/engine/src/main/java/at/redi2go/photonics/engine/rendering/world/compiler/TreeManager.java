@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Supplier;
 
-public class TreeManager implements WorldManager {
+public class TreeManager implements WorldManager, AutoCloseable {
     private final BlockMergeMode mergeMode;
     private final WorldAllocator worldAllocator;
 
@@ -199,6 +199,18 @@ public class TreeManager implements WorldManager {
             minBlock.min(chunk.minBounds());
             maxBlock.max(chunk.maxBounds());
         }
+    }
+
+    @Override
+    public void close() {
+        if (root != null) {
+            root.close();
+            root = null;
+        }
+        chunks.clear();
+        for (var queue : uploadQueue)
+            queue.clear();
+        rootMemory.close();
     }
 
     private static boolean isLessThan(Vector3i pos, Vector3i origin) {

@@ -34,6 +34,7 @@ import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3i;
+import net.fabricmc.loader.api.FabricLoader;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -247,11 +248,32 @@ public class McBlockRenderer {
         bufferSource.setBlockBuilder(builder);
 
         try {
+            if (FabricLoader.getInstance().isModLoaded("entity_model_features")) {
+                BlockEntityRenderQueue.runOnRenderThread(() -> submitBlockEntityOnCurrentThread(
+                        blockPos,
+                        blockState,
+                        blockAndTintGetter
+                ));
+            } else {
+                submitBlockEntityOnCurrentThread(blockPos, blockState, blockAndTintGetter);
+            }
+        } finally {
+            bufferSource.setBlockBuilder(null);
+        }
+    }
+
+    private void submitBlockEntityOnCurrentThread(
+            BlockPos blockPos,
+            BlockState blockState,
+            BlockAndTintGetter blockAndTintGetter
+    ) {
+        try {
+            bufferSource.withActiveCapture(() -> {
             BlockEntity entity = FULL_BLOCK_ENTITY_REQUIRED_FOR.contains(blockState.getBlock()) ?
                     fetchBlockEntity(blockPos, blockState) :
                     copyBlockEntity(blockState);
 
-            if (entity == null) return;
+            if (entity == null) return null;
 
             if (LEVEL_REQUIRED_FOR.contains(blockState.getBlock()))
                 entity.setLevel((Level) blockAndTintGetter);
@@ -261,14 +283,23 @@ public class McBlockRenderer {
                     (BlockEntityRenderer<BlockEntity, BlockEntityRenderState>) (Object)
                             Minecraft.getInstance().getBlockEntityRenderDispatcher().getRenderer(entity);
 
-            if (renderer == null) return;
+            if (renderer == null) return null;
 
             var renderState = renderer.createRenderState();
             renderer.extractRenderState(entity, renderState, 0.8f, cameraRenderState.pos, null);
 
             poseStack.pushPose();
-            renderer.submit(renderState, poseStack, bufferSource, cameraRenderState);
-            poseStack.popPose();
+            try {
+                renderer.submit(renderState, poseStack, bufferSource, cameraRenderState);
+            } finally {
+                poseStack.popPose();
+            }
+            return null;
+            });
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("Could not capture block-entity geometry", failure);
         } finally {
             bufferSource.setBlockBuilder(null);
         }

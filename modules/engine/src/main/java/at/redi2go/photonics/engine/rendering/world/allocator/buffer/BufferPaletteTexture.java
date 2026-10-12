@@ -9,8 +9,6 @@ import at.redi2go.photonics.engine.rendering.world.block.palette.PaletteTexture;
 import at.redi2go.photonics.engine.rendering.world.block.palette.PaletteTextureView;
 import org.joml.Vector4i;
 
-import java.nio.IntBuffer;
-
 public class BufferPaletteTexture implements PaletteTexture {
     // 4 ints per entry, with 6 faces.
     private static final long ENTRY_BYTE_SIZE = (4 * 4) * 6;
@@ -51,11 +49,9 @@ public class BufferPaletteTexture implements PaletteTexture {
 
     private static class View implements PaletteTextureView {
         private final MemoryView memory;
-        private final IntBuffer buffer;
 
         public View(MemoryView memory) {
             this.memory = memory;
-            this.buffer = memory.buffer().asIntBuffer();
         }
 
         @Override
@@ -65,12 +61,11 @@ public class BufferPaletteTexture implements PaletteTexture {
 
         @Override
         public void writeFace(int face, Vector4i value) {
-            buffer.position(face << 2);
-
-            buffer.put(value.x);
-            buffer.put(value.y);
-            buffer.put(value.z);
-            buffer.put(value.w);
+            int offset = face * 16;
+            memory.putInt(offset, value.x);
+            memory.putInt(offset + 4, value.y);
+            memory.putInt(offset + 8, value.z);
+            memory.putInt(offset + 12, value.w);
         }
 
         @Override

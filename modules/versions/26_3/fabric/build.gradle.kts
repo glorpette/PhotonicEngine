@@ -1,21 +1,14 @@
 plugins {
-    id("net.fabricmc.fabric-loom-remap")
+    id("net.fabricmc.fabric-loom")
     `photonics-fabric`
 }
 
 val mainLibs = libs263
 
-loom {
-    noIntermediateMappings()
-}
-
 dependencies {
-    add("mappings", loom.layered {
-        mappings(file("../empty.tiny"))
-    })
-
+    compileOnly(mainLibs.fabric.api)
     // Required by sodium
-    modRuntimeOnly(mainLibs.fabric.api)
+    runtimeOnly(mainLibs.fabric.api)
 }
 
 tasks {
@@ -25,17 +18,17 @@ tasks {
         val phVersion = constants.versions.photonics.get()
         val mcVersion = mainLibs.versions.minecraft.get()
         val fabricLoaderVersion = mainLibs.versions.fabric.loader.get()
+        val irisVersion = ">=${mainLibs.versions.iris.get().substringBefore('+')}"
+        val sodiumVersion = ">=${mainLibs.versions.sodium.get().split('-')[1]}"
 
         filesMatching("fabric.mod.json") {
             expand(
                 "photonics_version" to phVersion,
                 "minecraft_version" to mcVersion,
-                "fabric_loader_version" to fabricLoaderVersion
+                "fabric_loader_version" to fabricLoaderVersion,
+                "iris_version_range" to irisVersion,
+                "sodium_version_range" to sodiumVersion
             )
         }
-    }
-
-    remapSourcesJar {
-        enabled = false
     }
 }

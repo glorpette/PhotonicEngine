@@ -25,26 +25,39 @@ import org.joml.Vector3f;
 import org.joml.Vector3i;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class WorldCompiler implements Runnable, RenderingComponent {
-    public static final int MAX_SECTIONS_PER_RUN = 48;
+    public static final int MAX_SECTIONS_PER_RUN = 12;
 
     private static final int THREAD_POOL_SIZE = 3;
+    private static final long RETRY_WARNING_INTERVAL_NANOS = 10_000_000_000L;
+    private static final AtomicLong LAST_RETRY_WARNING_NANOS = new AtomicLong(Long.MIN_VALUE);
     private static final ExecutorService THREAD_POOL;
+    private static final ScheduledExecutorService RETRY_EXECUTOR;
 
     private final SectionManager.TaskQueue<ChunkCompiler.BuildResult> taskQueue;
+    private final SectionManager sectionManager;
 
     private final WorldAllocator worldAllocator;
     private final PaletteTexture paletteTexture;
 
     private final WorldRegistry registry;
+    private final Map<Vector3i, Integer> allocationRetryCounts = new ConcurrentHashMap<>();
+    private final Map<Vector3i, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
 
     private final RegionIdManager regionIds = new RegionIdManager();
     private final TreeManager treeManager;
@@ -80,17 +93,20 @@ public class WorldCompiler implements Runnable, RenderingComponent {
             WorldAllocator worldAllocator,
             PaletteTexture paletteTexture,
             SectionManager.TaskQueue<ChunkCompiler.BuildResult> taskQueue,
-            WorldRegistry worldRegistry
+            WorldRegistry worldRegistry,
+            SectionManager sectionManager
     ) {
         this.worldAllocator = worldAllocator;
         this.paletteTexture = paletteTexture;
 
         this.taskQueue = taskQueue;
+        this.sectionManager = sectionManager;
         this.registry = worldRegistry;
 
         this.treeManager = new TreeManager(BlockMergeMode.OVERWRITE, worldAllocator);
 
         this.compilerThread = new Thread(this, "Photonics World Compiler");
+        this.compilerThread.setDaemon(true);
         this.compilerThread.start();
     }
 
@@ -115,19 +131,37 @@ public class WorldCompiler implements Runnable, RenderingComponent {
 
 
                 var builtSections = taskQueue.drain(MAX_SECTIONS_PER_RUN);
-                if (!builtSections.isEmpty()) {
-                    recenter();
-
-                    clearPendingSections(builtSections);
-                    insertSections(builtSections);
-                }
-
                 if (!unloadedSections.isEmpty() || !builtSections.isEmpty()) {
-                    stopUpload();
-                    writeSections();
-                    awaitUpload();
+                    try {
+                        List<ChunkCompiler.BuildResult> successfulBuilds = new ArrayList<>(builtSections.size());
+                        for (var section : builtSections) {
+                            if (section.failed())
+                                section.close();
+                            else {
+                                successfulBuilds.add(section);
+                                clearRetryState(section.chunkPos());
+                            }
+                        }
+                        unloadedSections.forEach(this::clearRetryState);
 
-                    registry.freeUnusedObjects();
+                        if (!successfulBuilds.isEmpty()) {
+                            recenter();
+                            clearPendingSections(successfulBuilds);
+                            insertSections(successfulBuilds);
+                        }
+
+                        if (!unloadedSections.isEmpty() || !successfulBuilds.isEmpty()) {
+                            stopUpload();
+                            writeSections();
+                            awaitUpload();
+                        }
+                    } finally {
+                        builtSections.forEach(ChunkCompiler.BuildResult::close);
+                        registry.freeUnusedObjects();
+                        for (var section : builtSections)
+                            if (section.allocationFailed())
+                                scheduleAllocationRetry(section.chunkPos());
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -173,9 +207,40 @@ public class WorldCompiler implements Runnable, RenderingComponent {
     private void clearPendingSections(List<ChunkCompiler.BuildResult> sections) {
         IntSet regions = new IntOpenHashSet(sections.size());
         for (var section : sections)
-            regions.add(regionIds.getId(section.chunkPos()));
+            if (!section.failed())
+                regions.add(regionIds.getId(section.chunkPos()));
 
         treeManager.removeRegions(regions);
+    }
+
+    private void scheduleAllocationRetry(Vector3i sectionPos) {
+        Vector3i key = new Vector3i(sectionPos);
+        int attempt = allocationRetryCounts.merge(key, 1, Integer::sum);
+        if (attempt > 3) {
+            long now = System.nanoTime();
+            long last = LAST_RETRY_WARNING_NANOS.get();
+            if ((last == Long.MIN_VALUE || now - last >= RETRY_WARNING_INTERVAL_NANOS) &&
+                    LAST_RETRY_WARNING_NANOS.compareAndSet(last, now))
+                Photonics.LOGGER.warn("Photonics could not rebuild section {} after three buffer reclamation retries; it will retry after the next section update", key);
+            return;
+        }
+
+        long delaySeconds = attempt == 1 ? 2 : attempt == 2 ? 5 : 15;
+        var future = RETRY_EXECUTOR.schedule(() -> {
+            if (!scheduledRetries.containsKey(key) || !allocationRetryCounts.containsKey(key)) return;
+            sectionManager.requestRetry(key);
+        }, delaySeconds, TimeUnit.SECONDS);
+        var previous = scheduledRetries.put(key, future);
+        if (previous != null)
+            previous.cancel(true);
+    }
+
+    private void clearRetryState(Vector3i sectionPos) {
+        Vector3i key = new Vector3i(sectionPos);
+        allocationRetryCounts.remove(key);
+        var future = scheduledRetries.remove(key);
+        if (future != null)
+            future.cancel(true);
     }
 
     private void insertSections(List<ChunkCompiler.BuildResult> sections) {
@@ -183,10 +248,14 @@ public class WorldCompiler implements Runnable, RenderingComponent {
         Vector3i blockPos = new Vector3i();
 
         ILevel level = IMinecraft.getLevel();
-        if (level == null) return;
+        if (level == null) {
+            sections.forEach(ChunkCompiler.BuildResult::close);
+            return;
+        }
 
         for (var section : sections) {
             try (section) {
+                if (section.failed()) continue;
                 blockSorter.reset();
 
                 var chunkBlockPos = new Vector3i(section.chunkBlockPos())
@@ -338,7 +407,32 @@ public class WorldCompiler implements Runnable, RenderingComponent {
 
     @Override
     public void close() {
+        scheduledRetries.values().forEach(future -> future.cancel(true));
+        scheduledRetries.clear();
+        allocationRetryCounts.clear();
         compilerThread.interrupt();
+
+        boolean interrupted = false;
+        while (compilerThread.isAlive()) {
+            try {
+                compilerThread.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+                compilerThread.interrupt();
+            }
+        }
+
+        taskQueue.close();
+        treeManager.close();
+        try {
+            registry.freeUnusedObjects();
+        } catch (InterruptedException e) {
+            interrupted = true;
+        }
+        registry.close();
+
+        if (interrupted)
+            Thread.currentThread().interrupt();
     }
 
     private static class MultiThreadTask extends CompletableFuture<Void> implements CompilerTask {
@@ -383,7 +477,16 @@ public class WorldCompiler implements Runnable, RenderingComponent {
 
     static {
         AtomicInteger count = new AtomicInteger(0);
-        THREAD_POOL = Executors.newFixedThreadPool(THREAD_POOL_SIZE, (r) ->
-                new Thread(r, "Photonics World Worker #" + count.getAndIncrement()));
+        THREAD_POOL = Executors.newFixedThreadPool(THREAD_POOL_SIZE, (r) -> {
+            var thread = new Thread(r, "Photonics World Worker #" + count.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        });
+
+        RETRY_EXECUTOR = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            var thread = new Thread(runnable, "Photonics Allocation Retry");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 }

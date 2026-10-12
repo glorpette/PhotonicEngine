@@ -28,16 +28,28 @@ public class BaryPos extends Vector3f {
             Vector3f ca,
             Vector3f n
     ) {
+        return from(pos, ba, ca, n, new BaryPos());
+    }
+
+    public static BaryPos from(
+            Vector3f pos,
+            Vector3f ba,
+            Vector3f ca,
+            Vector3f n,
+            BaryPos result
+    ) {
         var nDotN = 1 / n.dot(n);
 
-        var result = new BaryPos(
-                ba.cross(pos, new Vector3f()).dot(n) * nDotN,
-                pos.cross(ca, new Vector3f()).dot(n) * nDotN,
-                0
-        );
+        float x = (ba.y * pos.z - ba.z * pos.y) * n.x
+                + (ba.z * pos.x - ba.x * pos.z) * n.y
+                + (ba.x * pos.y - ba.y * pos.x) * n.z;
+        float y = (pos.y * ca.z - pos.z * ca.y) * n.x
+                + (pos.z * ca.x - pos.x * ca.z) * n.y
+                + (pos.x * ca.y - pos.y * ca.x) * n.z;
 
-        result.z = 1 - result.x - result.y;
-
+        x *= nDotN;
+        y *= nDotN;
+        result.set(x, y, 1 - x - y);
         return result;
     }
 }

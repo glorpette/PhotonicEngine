@@ -29,9 +29,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class ChunkCompiler implements Runnable, RenderingComponent {
     private static final int THREAD_COUNT = 2;
+    private static final long ALLOCATION_ERROR_LOG_INTERVAL_NANOS = 10_000_000_000L;
+    private static final AtomicLong LAST_ALLOCATION_ERROR_LOG_NANOS = new AtomicLong(Long.MIN_VALUE);
 
     private final Queue<Vector3i> unloadQueue;
     private final SectionManager.SectionQueue sectionQueue;
@@ -59,15 +63,15 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
             var thread = new Thread(this, "Photonic Chunk Compiler #" + i);
             threads[i] = thread;
 
-            thread.setDaemon(false);
+            thread.setDaemon(true);
             thread.start();
         }
     }
 
     @Override
     public void run() {
-        try {
-            while (!Thread.interrupted()) {
+        while (!Thread.interrupted()) {
+            try {
                 sectionQueue.awaitTask();
                 var result = sectionQueue.take();
 
@@ -86,37 +90,54 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
                 if (isDuplicateSection(section.pos(), hash)) continue;
 
                 var buildResult = new BuildResult(section.pos(), section.blockPos(), hash, section.priority());
+                boolean setup = false;
+                try {
+                    BlockMesher.REGISTRY.setup();
+                    setup = true;
 
-                BlockMesher.REGISTRY.setup();
+                    section.forEachBlock(() -> !buildResult.failed(), (blockChunkOffset, blockPos, block) -> {
+                        if (block.ph$isAir()) return;
 
-                section.forEachBlock((blockChunkOffset, blockPos, block) -> {
-                    if (block.ph$isAir()) return;
+                        BlockMesher.REGISTRY.get(block.ph$block())
+                                .ifPresent(mesher -> {
+                                    CompletionStage<@Nullable BlockModel> model;
+                                    try {
+                                        model = worldRegistry.blockModelRegistry().getBlockModel(
+                                                mesher,
+                                                new Vector3i(blockChunkOffset),
+                                                blockPos,
+                                                block,
+                                                level
+                                        );
+                                    } catch (Throwable failure) {
+                                        buildResult.recordFailure(failure);
+                                        return;
+                                    }
 
-                    BlockMesher.REGISTRY.get(block.ph$block())
-                            .ifPresent(mesher -> buildResult.submitBlockFuture(
-                                    blockChunkOffset.x(),
-                                    blockChunkOffset.y(),
-                                    blockChunkOffset.z(),
-                                    block,
-                                    worldRegistry.blockModelRegistry().getBlockModel(
-                                            mesher,
-                                            new Vector3i(blockChunkOffset),
-                                            blockPos,
+                                    buildResult.submitBlockFuture(
+                                            blockChunkOffset.x(),
+                                            blockChunkOffset.y(),
+                                            blockChunkOffset.z(),
                                             block,
-                                            level
-                                    )
-                            ));
-                });
-
-                BlockMesher.REGISTRY.teardown();
+                                            model
+                                    );
+                                });
+                    });
+                } catch (RuntimeException | Error failure) {
+                    buildResult.close();
+                    throw failure;
+                } finally {
+                    if (setup)
+                        BlockMesher.REGISTRY.teardown();
+                }
 
                 buildResult.awaitSubmission();
+            } catch (InterruptedException e) {
+                return;
+            } catch (Throwable t) {
+                if (IgnoredInterruptedException.shouldIgnore(t)) return;
+                Photonics.LOGGER.warn("An exception was thrown during chunk compilation; the worker will continue", t);
             }
-        } catch (Throwable t) {
-            if (t instanceof InterruptedException) return;
-            if (IgnoredInterruptedException.shouldIgnore(t)) return;
-
-            Photonics.LOGGER.warn("An exception was throw during chunk compilation!", t);
         }
     }
 
@@ -156,6 +177,21 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
     public void close() {
         for (var thread : threads)
             thread.interrupt();
+        sectionQueue.close();
+
+        boolean interrupted = false;
+        for (var thread : threads) {
+            while (thread.isAlive()) {
+                try {
+                    thread.join();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                    thread.interrupt();
+                }
+            }
+        }
+        if (interrupted)
+            Thread.currentThread().interrupt();
     }
 
     public class BuildResult implements PrioritizedTask, Disposable {
@@ -164,10 +200,13 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
         private final long hash;
         private final long priority;
 
-        private final List<BlockResult> blocks = new ArrayList<>(128);
+        private final List<BlockResult> blocks = new ArrayList<>();
 
         private final AtomicInteger pendingBlocks = new AtomicInteger();
         private final CompletableFuture<Void> future = new CompletableFuture<>();
+        private final AtomicBoolean failed = new AtomicBoolean();
+        private final AtomicBoolean allocationFailed = new AtomicBoolean();
+        private final AtomicBoolean closed = new AtomicBoolean();
 
         public BuildResult(
                 Vector3i chunkPos,
@@ -205,19 +244,30 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
 
                 int remaining = (pending & Integer.MAX_VALUE) + 1;
                 if (pendingBlocks.compareAndSet(pending, remaining | (pending & Integer.MIN_VALUE))) {
-                    block.handle((result, t) -> {
-                        if (!IgnoredInterruptedException.shouldIgnore(t))
-                            Photonics.LOGGER.error("An error was thrown while meshing block", t);
-
+                    block.whenComplete((result, t) -> {
                         try {
-                            completeBlock(x, y, z, blockState, result);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        } catch (Throwable t2) {
-                            Photonics.LOGGER.error("Error while setting block", t2);
+                            if (t != null) {
+                                failed.set(true);
+                                if (isBufferAllocationFailure(t))
+                                    allocationFailed.set(true);
+                                if (!IgnoredInterruptedException.shouldIgnore(t))
+                                    reportMeshFailure(t);
+                            } else if (result != null) {
+                                addBlock(new BlockResult(x, y, z, blockState, result));
+                            }
+                        } catch (Throwable callbackFailure) {
+                            if (result != null) {
+                                try {
+                                    result.close();
+                                } catch (RuntimeException | Error cleanupFailure) {
+                                    callbackFailure.addSuppressed(cleanupFailure);
+                                }
+                            }
+                            failed.set(true);
+                            reportMeshFailure(callbackFailure);
+                        } finally {
+                            completeBlock();
                         }
-
-                        return null;
                     });
 
                     return;
@@ -225,14 +275,17 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
             }
         }
 
-        private void completeBlock(
-                int x, int y, int z,
-                IBlockState blockState,
-                @Nullable BlockModel blockModel
-                ) throws InterruptedException {
-            if (blockModel != null)
-                blocks.add(new BlockResult(x, y, z, blockState, blockModel));
+        private void addBlock(BlockResult block) {
+            synchronized (blocks) {
+                if (closed.get()) {
+                    block.model.close();
+                    return;
+                }
+                blocks.add(block);
+            }
+        }
 
+        private void completeBlock() {
             while (true) {
                 int pending = pendingBlocks.get();
                 if (pending == -1) throw new IllegalStateException();
@@ -246,7 +299,7 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
             }
         }
 
-        private void trySubmit() throws InterruptedException {
+        private void trySubmit() {
             while (true) {
                 int pending = pendingBlocks.get();
                 if (pending == -1 || (pending & Integer.MIN_VALUE) == 0) return;
@@ -275,22 +328,87 @@ public class ChunkCompiler implements Runnable, RenderingComponent {
             }
 
 
-            future.get();
+            try {
+                future.get();
 
-            if (setLatestSection(chunkPos, priority) && setSectionHash(chunkPos, hash)) {
-                builtSectionQueue.offer(chunkPos, this);
-            } else close();
+                if (!setLatestSection(chunkPos, priority)) {
+                    close();
+                    return;
+                }
+
+                if (!builtSectionQueue.offer(chunkPos, this)) {
+                    close();
+                    return;
+                }
+
+                if (!failed.get())
+                    setSectionHash(chunkPos, hash);
+            } catch (InterruptedException e) {
+                close();
+                throw e;
+            }
+        }
+
+        public boolean failed() {
+            return failed.get();
+        }
+
+        private void recordFailure(Throwable failure) {
+            failed.set(true);
+            if (isBufferAllocationFailure(failure))
+                allocationFailed.set(true);
+            if (!IgnoredInterruptedException.shouldIgnore(failure))
+                reportMeshFailure(failure);
+        }
+
+        public boolean allocationFailed() {
+            return allocationFailed.get();
         }
 
         public void forEachBlock(TriConsumer<Vector3i, IBlockState, BlockModel> blockConsumer) {
-            for (var block : blocks)
-                blockConsumer.accept(block, block.blockState, block.model);
+            synchronized (blocks) {
+                for (var block : blocks)
+                    blockConsumer.accept(block, block.blockState, block.model);
+            }
         }
 
         @Override
         public void close() {
-            for (var block : blocks)
-                block.model.close();
+            synchronized (blocks) {
+                if (!closed.compareAndSet(false, true)) return;
+                for (var block : blocks)
+                    block.model.close();
+                blocks.clear();
+            }
+        }
+
+        private void reportMeshFailure(Throwable error) {
+            if (isBufferAllocationFailure(error)) {
+                long now = System.nanoTime();
+                long last = LAST_ALLOCATION_ERROR_LOG_NANOS.get();
+                if (last != Long.MIN_VALUE && now - last < ALLOCATION_ERROR_LOG_INTERVAL_NANOS) return;
+                if (!LAST_ALLOCATION_ERROR_LOG_NANOS.compareAndSet(last, now)) return;
+                Runtime runtime = Runtime.getRuntime();
+                long heapUsed = runtime.totalMemory() - runtime.freeMemory();
+                Photonics.LOGGER.error(
+                        "Photonics world-buffer allocation failed (Java heap used={} MiB, committed={} MiB, max={} MiB); later failures are suppressed for 10 seconds",
+                        heapUsed >> 20,
+                        runtime.totalMemory() >> 20,
+                        runtime.maxMemory() >> 20,
+                        error
+                );
+                return;
+            }
+            Photonics.LOGGER.error("An error was thrown while meshing a block", error);
+        }
+
+        private boolean isBufferAllocationFailure(Throwable error) {
+            for (Throwable current = error; current != null; current = current.getCause()) {
+                if (current instanceof OutOfMemoryError && current.getMessage() != null &&
+                        current.getMessage().startsWith("Could not allocate"))
+                    return true;
+            }
+            return false;
         }
     }
 

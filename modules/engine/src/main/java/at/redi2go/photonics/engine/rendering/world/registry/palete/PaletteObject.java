@@ -79,6 +79,16 @@ public class PaletteObject extends PaletteEntry implements WorldObject, VoxelTre
     }
 
     @Override
+    public void enqueueIfUnused() {
+        ref.enqueueIfUnused();
+    }
+
+    @Override
+    public void discardIfUnused() {
+        ref.discardIfUnused();
+    }
+
+    @Override
     public void close() {
         ref.close();
     }

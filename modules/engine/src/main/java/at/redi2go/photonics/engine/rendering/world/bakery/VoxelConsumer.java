@@ -1,11 +1,12 @@
 package at.redi2go.photonics.engine.rendering.world.bakery;
 
-import at.redi2go.photonics.engine.rendering.world.block.TextureData;
-
 public interface VoxelConsumer {
     void acceptVoxel(
             int x, int y, int z,
             int normal,
-            TextureData textureData
+            int blockId,
+            int color,
+            int textureNormal,
+            int specular
     );
 }

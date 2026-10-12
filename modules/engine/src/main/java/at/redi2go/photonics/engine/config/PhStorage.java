@@ -14,6 +14,9 @@ public class PhStorage {
     private static final LinkedHashMap<String, LightGroup> EMPTY_LIGHTS = new LinkedHashMap<>(0);
 
     public boolean multiThreadingEnabled = true;
+    public int maxRaytraceDistance = 8;
+    public int maxRaytraceSections = 1024;
+    public int maxRaytraceWorldMib = 256;
     public LightDefines defines = LightDefines.EMPTY;
     public LinkedHashMap<String, LightGroup> lights = EMPTY_LIGHTS;
 

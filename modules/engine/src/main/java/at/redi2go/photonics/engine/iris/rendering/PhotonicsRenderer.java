@@ -50,12 +50,22 @@ public enum PhotonicsRenderer {
         PhotonicsRenderer renderer = properties.getRenderer();
         Object rendererProperties = propertiesManager.getProperties(renderer.propertiesType);
 
-        return renderer.supplier.create(
-                properties,
-                rendererProperties,
-                atlasDownloaderSupplier.get(),
-                irisPipeline
-        );
+        AtlasDownloader atlasDownloader = atlasDownloaderSupplier.get();
+        try {
+            return renderer.supplier.create(
+                    properties,
+                    rendererProperties,
+                    atlasDownloader,
+                    irisPipeline
+            );
+        } catch (RuntimeException | Error failure) {
+            try {
+                atlasDownloader.close();
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     private static String makeKey(String name) {

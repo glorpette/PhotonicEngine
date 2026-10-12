@@ -1,5 +1,6 @@
 package at.redi2go.photonics.engine.iris.rendering;
 
+import at.redi2go.photonics.engine.config.PhConfig;
 import at.redi2go.photonics.engine.rendering.world.bakery.texture.AtlasDownloader;
 import at.redi2go.photonics.engine.iris.pipeline.IrisPipeline;
 import at.redi2go.photonics.engine.iris.pipeline.IrisRenderer;
@@ -35,6 +36,24 @@ public abstract class PhotonicsPipeline extends AbstractRenderingComponent {
     ) {
         super(components);
         this.properties = properties;
+
+        try {
+            initialize(properties, atlasDownloader, pipeline);
+        } catch (RuntimeException | Error failure) {
+            try {
+                super.close();
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private void initialize(
+            PhotonicsProperties properties,
+            AtlasDownloader atlasDownloader,
+            IrisPipeline pipeline
+    ) {
         registerComponent(pipeline);
 
         registerResource(atlasDownloader);
@@ -49,9 +68,12 @@ public abstract class PhotonicsPipeline extends AbstractRenderingComponent {
             }
         });
 
-        var sectionManager = registerComponent(new SectionManager(IMinecraft::getRenderDistance));
+        var sectionManager = registerComponent(new SectionManager(() -> Math.min(
+                IMinecraft.getRenderDistance(),
+                PhConfig.getMaxRaytraceDistance()
+        )));
 
-        var worldAllocator = registerComponent(new BufferWorldAllocator(1 << 29));
+        var worldAllocator = registerComponent(new BufferWorldAllocator(PhConfig.getMaxRaytraceWorldBytes()));
         var paletteTexture = registerComponent(new BufferPaletteTexture(2048, 600));
 
         var worldRegistry = new WorldRegistry(worldAllocator, paletteTexture, atlasDownloader);
@@ -62,7 +84,8 @@ public abstract class PhotonicsPipeline extends AbstractRenderingComponent {
                 worldAllocator,
                 paletteTexture,
                 builtSectionQueue,
-                worldRegistry
+                worldRegistry,
+                sectionManager
         ));
 
         registerComponent(new ChunkCompiler(

@@ -6,6 +6,13 @@ import at.redi2go.photonics.game.blaze3d.buffers.IGpuBufferSlice;
 import at.redi2go.photonics.game.blaze3d.systems.ICommandEncoder;
 import at.redi2go.photonics.game.blaze3d.textures.IGpuTexture;
 import at.redi2go.photonics.game.blaze3d.textures.TextureFormat;
+import at.redi2go.photonics.impl.blaze3d.opengl.DirectStateAccessor;
+import at.redi2go.photonics.impl.blaze3d.opengl.GlCommandEncoderAccess;
+import at.redi2go.photonics.impl.blaze3d.opengl.GlCommandEncoderAccessor;
+import at.redi2go.photonics.impl.blaze3d.opengl.GlDeviceAccessor;
+import at.redi2go.photonics.impl.blaze3d.opengl.textures.GlTexture;
+import com.mojang.renderpearl.backend.api.CommandEncoderBackend;
+import com.mojang.renderpearl.backend.opengl.DirectStateAccess;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.textures.GpuTexture;
@@ -14,12 +21,19 @@ import org.joml.Vector2ic;
 import org.joml.Vector3ic;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
 
 @Mixin(FrontendCommandEncoder.class)
 public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
+    @Shadow
+    public abstract CommandEncoderBackend backend();
+
+    @Shadow
+    public abstract boolean isInRenderPass();
+
     @Shadow
     public abstract void writeToBuffer(GpuBufferSlice slice, ByteBuffer data);
 
@@ -93,16 +107,11 @@ public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
             Vector3ic size,
             Vector3ic offset
     ) {
-        writeToTexture(
-                (GpuTexture) (Object) gpuTexture,
-                byteBuffer,
-                mipLevel,
-                layer,
-                offset.x(),
-                offset.y(),
-                size.x(),
-                size.y()
-        );
+        checkNotInRenderPass();
+        GlTexture texture = (GlTexture) gpuTexture;
+        try (var state = texture.createStateAccess()) {
+            state.texSubData(byteBuffer, bufferFormat, layer, mipLevel, size, offset);
+        }
     }
 
     @Override
@@ -116,17 +125,33 @@ public abstract class FrontendCommandEncoderImpl implements ICommandEncoder {
             int mipLevel
     ) {
         var future = new CompletableFuture<Void>();
-        copyTextureToBuffer(
-                (GpuTexture) (Object) srcTexture,
-                (GpuBuffer) (Object) dstBuffer,
-                dstOffset,
-                () -> future.complete(null),
-                mipLevel,
-                srcOffset.x(),
-                srcOffset.y(),
-                copySize.x(),
-                copySize.y()
-        );
+        checkNotInRenderPass();
+        GlTexture texture = (GlTexture) srcTexture;
+        GlCommandEncoderAccessor encoder = (GlCommandEncoderAccessor) (Object) backend();
+        GlDeviceAccessor device = GlCommandEncoderAccess.device(backend());
+        DirectStateAccess directStateAccess = device.ph$getDirectStateAccess();
+
+        try (var state = texture.createStateAccess()) {
+            state.texReadPixels(
+                    encoder.ph$getReadFbo(),
+                    (DirectStateAccessor) (Object) directStateAccess,
+                    srcOffset,
+                    copySize,
+                    dstBuffer,
+                    dstOffset,
+                    layer,
+                    mipLevel,
+                    () -> future.complete(null)
+            );
+        } catch (Throwable error) {
+            future.completeExceptionally(error);
+        }
         return future;
+    }
+
+    @Unique
+    private void checkNotInRenderPass() {
+        if (isInRenderPass())
+            throw new IllegalStateException("Close the existing render pass before performing additional commands");
     }
 }

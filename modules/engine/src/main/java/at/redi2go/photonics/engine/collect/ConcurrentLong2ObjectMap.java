@@ -35,6 +35,18 @@ public class ConcurrentLong2ObjectMap<V> extends PrimitiveConcurrentMap implemen
         return super.isEmpty(maps);
     }
 
+    public void clear() {
+        for (int bucket = 0; bucket < maps.length; bucket++) {
+            Lock writeLock = locks[bucket].writeLock();
+            writeLock.lock();
+            try {
+                maps[bucket].clear();
+            } finally {
+                writeLock.unlock();
+            }
+        }
+    }
+
     @Override
     public boolean containsKey(long key) {
         int bucket = getBucket(key);

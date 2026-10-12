@@ -39,8 +39,19 @@ public class ObjectRegistry<T extends WorldObject> {
         var newValue = supplier.apply(key);
         var result = cache.putIfAbsent(newValue, newValue);
         if (result == null) {
-            allocator.accept(newValue);
-            return newValue;
+            try {
+                allocator.accept(newValue);
+                newValue.enqueueIfUnused();
+                return newValue;
+            } catch (RuntimeException | Error failure) {
+                cache.remove(newValue, newValue);
+                try {
+                    newValue.discardIfUnused();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
         }
 
         return result;
@@ -78,6 +89,16 @@ public class ObjectRegistry<T extends WorldObject> {
                 if (value != null)
                     removeObject(value);
             }
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    public void clearCache() {
+        lock.writeLock().lock();
+        try {
+            cache.clear();
+            freeQueue.clear();
         } finally {
             lock.writeLock().unlock();
         }

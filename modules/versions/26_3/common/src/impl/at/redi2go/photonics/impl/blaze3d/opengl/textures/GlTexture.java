@@ -80,7 +80,7 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
         GlStateManager._texParameter(getTarget(), pname, param);
     }
 
-    protected abstract void texImageImpl(int layer, int mipLevel, @Nullable ByteBuffer pixels);
+    protected abstract void texImageImpl(int layer, int mipLevel, Vector3ic size, @Nullable ByteBuffer pixels);
 
     protected abstract void texSubDataImpl(ByteBuffer byteBuffer, TextureFormat bufferFormat, int layer, int mipLevel, Vector3ic size, Vector3ic offset);
 
@@ -113,17 +113,24 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
 
     @Override
     public int ph$getWidth(int mipLevel) {
-        return width >> mipLevel;
+        return mipDimension(width, mipLevel);
     }
 
     @Override
     public int ph$getHeight(int mipLevel) {
-        return height >> mipLevel;
+        return mipDimension(height, mipLevel);
     }
 
     @Override
     public void ph$resize(Vector3ic newSize) {
         if (ph$getSize(0).equals(newSize)) return;
+        if ((usage & TextureUsage.RESIZEABLE) == 0)
+            throw new IllegalStateException("Texture does not have RESIZEABLE usage");
+        checkArguments(newSize, mipLevels);
+
+        width = newSize.x();
+        height = newSize.y();
+        depthOrLayers = newSize.z();
 
         try(var state = createStateAccess()) {
             state.texParameter(GL12.GL_TEXTURE_MIN_LOD, 0);
@@ -153,6 +160,12 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
             throw new IllegalStateException("closed");
     }
 
+    protected int mipDimension(int dimension, int mipLevel) {
+        if (mipLevel < 0 || mipLevel >= mipLevels)
+            throw new IllegalArgumentException("Invalid mipLevel, must be >= 0 and < " + mipLevels);
+        return Math.max(1, dimension >> mipLevel);
+    }
+
     @Override
     public void close() {
         RenderSystem.assertOnRenderThread();
@@ -178,12 +191,12 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
         }
 
         protected void checkLayersRange(int layer) {
-            if (layer > ph$getLayers())
+            if (layer < 0 || layer >= ph$getLayers())
                 throw new UnsupportedOperationException("Layer is out of range, must be >= 0 and < " + ph$getLayers());
         }
 
         protected void checkMipLevelRange(int mipLevel) {
-            if (mipLevel > ph$getMipLevels())
+            if (mipLevel < 0 || mipLevel >= ph$getMipLevels())
                 throw new IllegalArgumentException("Invalid mipLevel, must be >= 0 and < " + ph$getMipLevels());
         }
 
@@ -199,9 +212,10 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
             checkMipLevelRange(mipLevel);
             checkLayersRange(layer);
 
-            boolean resizeable = (usage & TextureUsage.RESIZEABLE) != 0;
-            if (resizeable) checkArguments(size, mipLevels);
-            if (!resizeable && !ph$getSize(0).equals(size)) throw new IllegalArgumentException("Only textures with RESIZEABLE can be resized");
+            if (size.x() < 1 || size.y() < 1 || size.z() < 1)
+                throw new IllegalArgumentException("Texture image dimensions must be positive");
+            if ((usage & TextureUsage.RESIZEABLE) == 0 && !ph$getSize(mipLevel).equals(size))
+                throw new IllegalArgumentException("Only textures with RESIZEABLE can be resized");
 
             int requiredByteSize = size.x() * size.y() * size.z() * format.getTexelByteSize();
             if (pixels != null && requiredByteSize > pixels.remaining())
@@ -213,11 +227,7 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
                         requiredByteSize
                 ));
 
-            width = size.x();
-            height = size.y();
-            depthOrLayers = size.z();
-
-            texImageImpl(layer, mipLevel, pixels);
+            texImageImpl(layer, mipLevel, size, pixels);
         }
 
         @Override
@@ -256,7 +266,7 @@ public sealed abstract class GlTexture implements IGpuTexture, GlObject permits 
                         requiredByteSize
                 ));
 
-            texSubDataImpl(byteBuffer, bufferFormat, mipLevel, layer, size, offset);
+            texSubDataImpl(byteBuffer, bufferFormat, layer, mipLevel, size, offset);
         }
 
         @Override

@@ -6,6 +6,7 @@ import at.redi2go.photonics.engine.RenderingComponent;
 import at.redi2go.photonics.game.minecraft.IMinecraft;
 import at.redi2go.photonics.game.minecraft.world.level.ILevel;
 import at.redi2go.photonics.game.minecraft.world.level.chunk.IChunkSection;
+import at.redi2go.photonics.engine.config.PhConfig;
 import at.redi2go.photonics.engine.collect.EmptyQueue;
 import it.unimi.dsi.fastutil.Pair;
 import org.joml.Vector2i;
@@ -15,6 +16,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -33,6 +35,9 @@ import java.util.function.IntSupplier;
 public class SectionManager implements RenderingComponent {
     private Set<Vector2i> loadedChunks = Set.of();
     private final Set<Vector3i> notEmptySections = ConcurrentHashMap.newKeySet();
+    private final Queue<Vector3i> retryQueue = new ConcurrentLinkedQueue<>();
+    private final Set<Vector3i> pendingCopyPositions = ConcurrentHashMap.newKeySet();
+    private final Set<Vector3i> queuedRetries = ConcurrentHashMap.newKeySet();
 
     private final List<Queue<Vector3i>> unloadQueues = new ArrayList<>();
     private final List<TaskQueue<?>> taskQueues = new ArrayList<>();
@@ -45,6 +50,7 @@ public class SectionManager implements RenderingComponent {
     }
 
     private Vector3i lastCameraPos = null;
+    private final Vector3i cameraPosScratch = new Vector3i();
     private int lastRenderDistance = -1;
 
     private void queueUnload(Vector3i section) {
@@ -62,20 +68,37 @@ public class SectionManager implements RenderingComponent {
         }
     }
 
-    private void queueSection(SectionCopy section) throws InterruptedException {
+    private void queueSection(Vector3i sectionPos) {
+        if (!notEmptySections.contains(sectionPos)) return;
+        pendingCopyPositions.remove(sectionPos);
+        pendingCopyPositions.add(new Vector3i(sectionPos));
+    }
+
+    private void enqueuePendingCopies(ILevel level) throws InterruptedException {
+        int queued = 0;
         for (var taskQueue : taskQueues) {
             if (taskQueue instanceof SectionQueue sectionQueue) {
-                try {
-                    sectionQueue.offer(section.pos(), section);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
+                while (queued < MAX_SECTION_COPIES_PER_FRAME && !pendingCopyPositions.isEmpty() && sectionQueue.hasAvailableCapacity()) {
+                    var pos = pendingCopyPositions.iterator().next();
+                    pendingCopyPositions.remove(pos);
+                    if (!notEmptySections.contains(pos)) continue;
+                    var copy = createCopy(pos, level);
+                    if (copy.isPresent()) {
+                        sectionQueue.offer(pos, copy.get());
+                        queued++;
+                    } else if (notEmptySections.remove(pos)) {
+                        queueUnload(pos);
+                    }
                 }
             }
         }
     }
 
+    private static final int MAX_SECTION_COPIES_PER_FRAME = 4;
+
     private void refreshSections( ILevel level) throws InterruptedException {
-        var cameraPos = getCameraChunkPos();
+        getCameraChunkPos(cameraPosScratch);
+        var cameraPos = cameraPosScratch;
         int rd = renderDistanceSupplier.getAsInt();
 
         if (rd == lastRenderDistance && Objects.equals(lastCameraPos, cameraPos)) return;
@@ -83,7 +106,6 @@ public class SectionManager implements RenderingComponent {
         Set<Vector2i> discoveredChunks = new HashSet<>();
         Set<Vector3i> discoveredSections = new HashSet<>();
         Set<Vector3i> unloadedSections = new HashSet<>();
-        List<Pair<Vector3i, SectionCopy>> sectionsToUpdate = new ArrayList<>();
 
         for (int px = -rd; px <= rd; px++) {
             for (int pz = -rd; pz <= rd; pz++) {
@@ -111,9 +133,21 @@ public class SectionManager implements RenderingComponent {
                     discoveredSections.add(sectionCoord);
 
                     if (!notEmptySections.contains(sectionCoord))
-                        sectionsToUpdate.add(Pair.of(sectionCoord, new SectionCopy(sectionCoord, section, remeshCount++)));
+                        pendingCopyPositions.add(sectionCoord);
                 }
             }
+        }
+
+        int maxSections = PhConfig.getMaxRaytraceSections();
+        if (discoveredSections.size() > maxSections) {
+            var nearestSections = new ArrayList<>(discoveredSections);
+            nearestSections.sort(Comparator
+                    .comparingLong((Vector3i section) -> section.gridDistance(cameraPos))
+                    .thenComparingInt(section -> section.x)
+                    .thenComparingInt(section -> section.y)
+                    .thenComparingInt(section -> section.z));
+            discoveredSections.clear();
+            discoveredSections.addAll(nearestSections.subList(0, maxSections));
         }
 
         for (var itr = notEmptySections.iterator(); itr.hasNext(); ) {
@@ -122,13 +156,16 @@ public class SectionManager implements RenderingComponent {
 
             itr.remove();
             unloadedSections.add(section);
+            pendingCopyPositions.remove(section);
+            queuedRetries.remove(section);
         }
 
         notEmptySections.addAll(discoveredSections);
 
         loadedChunks = discoveredChunks;
 
-        lastCameraPos = cameraPos;
+        if (lastCameraPos == null) lastCameraPos = new Vector3i(cameraPos);
+        else lastCameraPos.set(cameraPos);
         lastRenderDistance = rd;
 
         for (var unloadQueue : unloadQueues)
@@ -140,9 +177,6 @@ public class SectionManager implements RenderingComponent {
             try {
                 if (taskQueue.tracksUnloads())
                     taskQueue.offerUnloads(unloadedSections);
-
-                if (taskQueue instanceof SectionQueue sectionQueue)
-                    sectionQueue.offerMany(sectionsToUpdate);
             } finally {
                 taskQueue.lock.unlock();
             }
@@ -157,7 +191,7 @@ public class SectionManager implements RenderingComponent {
     }
 
     public SectionQueue newSectionQueue(boolean trackUnloads) {
-        var queue = new SectionQueue(-1, trackUnloads);
+        var queue = new SectionQueue(64, trackUnloads);
         taskQueues.add(queue);
 
         return queue;
@@ -168,6 +202,12 @@ public class SectionManager implements RenderingComponent {
         taskQueues.add(queue);
 
         return queue;
+    }
+
+    public void requestRetry(Vector3i sectionPos) {
+        var key = new Vector3i(sectionPos);
+        if (queuedRetries.add(key))
+            retryQueue.add(key);
     }
 
     private Optional<SectionCopy> createCopy(Vector3i sectionPos, ILevel level) {
@@ -192,12 +232,48 @@ public class SectionManager implements RenderingComponent {
         if (level == null) return;
 
         try {
-            if (renderDistanceSupplier.getAsInt() != lastRenderDistance) {
-                refreshSections(level);
+            refreshSections(level);
+            int retried = 0;
+            Vector3i sectionPos;
+            while (retried < MAX_SECTION_COPIES_PER_FRAME && (sectionPos = retryQueue.peek()) != null) {
+                if (taskQueues.stream().filter(SectionQueue.class::isInstance).map(SectionQueue.class::cast).noneMatch(SectionQueue::hasAvailableCapacity))
+                    break;
+                retryQueue.poll();
+                queuedRetries.remove(sectionPos);
+                if (!notEmptySections.contains(sectionPos)) continue;
+
+                var copy = createCopy(sectionPos, level);
+                if (copy.isPresent()) {
+                    queueSection(sectionPos);
+                    pendingCopyPositions.remove(sectionPos);
+                    var section = copy.get();
+                    for (var taskQueue : taskQueues) {
+                        if (taskQueue instanceof SectionQueue sectionQueue && sectionQueue.hasAvailableCapacity()) {
+                            sectionQueue.offer(sectionPos, section);
+                            retried++;
+                        }
+                    }
+                }
+                else if (notEmptySections.remove(sectionPos))
+                    queueUnload(sectionPos);
             }
+            enqueuePendingCopies(level);
         } catch (InterruptedException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Override
+    public void close() {
+        retryQueue.clear();
+        queuedRetries.clear();
+        pendingCopyPositions.clear();
+        for (var queue : taskQueues)
+            queue.close();
+        taskQueues.clear();
+        unloadQueues.clear();
+        notEmptySections.clear();
+        loadedChunks = Set.of();
     }
 
     @Override
@@ -211,13 +287,10 @@ public class SectionManager implements RenderingComponent {
 
             if (!loadedChunks.contains(new Vector2i(x, z))) return;
             if (notEmptySections.contains(sectionPos)) return;
+            if (notEmptySections.size() >= PhConfig.getMaxRaytraceSections()) return;
 
-            var copyResult = createCopy(sectionPos, level);
-            if (copyResult.isEmpty()) return;
-
-            var section = copyResult.get();
-            notEmptySections.add(section.pos());
-            queueSection(section);
+            notEmptySections.add(sectionPos);
+            queueSection(sectionPos);
         } catch (InterruptedException e) {
             throw new IllegalStateException(e);
         }
@@ -228,31 +301,22 @@ public class SectionManager implements RenderingComponent {
         ILevel level = IMinecraft.getLevel();
         if (level == null) return;
 
-        try {
-            Vector3i sectionPos = new Vector3i(x, y, z);
-            if (!notEmptySections.contains(sectionPos)) {
-                onSectionAdded(x, y, z);
-                return;
-            }
-
-            var copyResult = createCopy(sectionPos, level);
-            if (copyResult.isEmpty()) {
-                if (notEmptySections.remove(sectionPos))
-                    queueUnload(sectionPos);
-
-                return;
-            }
-
-            var section = copyResult.get();
-            queueSection(section);
-        } catch (InterruptedException e) {
-            throw new IllegalStateException(e);
+        Vector3i sectionPos = new Vector3i(x, y, z);
+        if (!notEmptySections.contains(sectionPos)) {
+            onSectionAdded(x, y, z);
+            return;
         }
+
+        queueSection(sectionPos);
     }
 
     public static Vector3i getCameraChunkPos() {
+        return getCameraChunkPos(new Vector3i());
+    }
+
+    private static Vector3i getCameraChunkPos(Vector3i destination) {
         var cameraPos = IMinecraft.getCameraPos();
-        return new Vector3i(
+        return destination.set(
                 (int) cameraPos.x >> 4,
                 (int) cameraPos.y >> 4,
                 (int) cameraPos.z >> 4
@@ -274,9 +338,11 @@ public class SectionManager implements RenderingComponent {
         private final Queue<Vector3i> unloadedQueue;
 
         private Vector3i lastCameraPos = null;
+        private final Vector3i cameraPosScratch = new Vector3i();
         private int lastRenderDistance = 0;
         private boolean newPending = false;
         private int mod = 0;
+        private boolean closed = false;
 
         private TaskQueue(int maxSize, boolean trackUnloads) {
             this.capacity = maxSize;
@@ -294,10 +360,37 @@ public class SectionManager implements RenderingComponent {
 
             try {
                 while (true) {
-                    if (size != 0 || !unloadedQueue.isEmpty()) return;
+                    if (closed || size != 0 || !unloadedQueue.isEmpty()) return;
 
                     notEmptyCondition.await();
                 }
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public void close() {
+            lock.lock();
+            try {
+                if (closed) return;
+                closed = true;
+                for (var value : sectionValues.values())
+                    tryClose(value);
+                sectionValues.clear();
+                Arrays.fill(sectionQueue, null);
+                size = 0;
+                unloadedQueue.clear();
+                notEmptyCondition.signalAll();
+                notFullCondition.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public boolean hasAvailableCapacity() {
+            lock.lock();
+            try {
+                return !closed && (capacity <= 0 || size < capacity);
             } finally {
                 lock.unlock();
             }
@@ -365,14 +458,22 @@ public class SectionManager implements RenderingComponent {
         }
 
 
-        public void offer(Vector3i sectionCoord, V element) throws InterruptedException {
+        public boolean offer(Vector3i sectionCoord, V element) throws InterruptedException {
             lock.lockInterruptibly();
 
             try {
-                while (size == capacity)
+                while (!closed && size == capacity)
                     notFullCondition.await();
 
-                if (!notEmptySections.contains(sectionCoord)) return;
+                if (closed) {
+                    tryClose(element);
+                    return false;
+                }
+
+                if (!notEmptySections.contains(sectionCoord)) {
+                    tryClose(element);
+                    return false;
+                }
 
                 boolean[] shouldAppendSection = {false};
                 sectionValues.compute(sectionCoord, (k, previous) -> {
@@ -393,7 +494,7 @@ public class SectionManager implements RenderingComponent {
                     }
                 });
 
-                if (!shouldAppendSection[0]) return;
+                if (!shouldAppendSection[0]) return true;
 
                 requireCapacity(size + 1);
 
@@ -401,6 +502,7 @@ public class SectionManager implements RenderingComponent {
 
                 newPending = true;
                 notEmptyCondition.signalAll();
+                return true;
             } finally {
                 lock.unlock();
             }
@@ -411,12 +513,18 @@ public class SectionManager implements RenderingComponent {
             lock.lockInterruptibly();
 
             try {
+                if (closed) {
+                    elements.forEach(element -> tryClose(element.right()));
+                    return;
+                }
                 int index = 0;
                 while (index < elements.size()) {
                     while (size == capacity)
                         notFullCondition.await();
 
-                    int maxRemainingSlots = capacity > 0 ? (capacity - size) : elements.size();
+                    int maxRemainingSlots = capacity > 0
+                            ? Math.min(capacity - size, elements.size() - index)
+                            : elements.size() - index;
                     requireCapacity(size + maxRemainingSlots);
 
                     boolean changed = false;
@@ -426,8 +534,25 @@ public class SectionManager implements RenderingComponent {
                         var sectionCoord = elementPair.left();
                         var element = elementPair.right();
 
-                        var previousValue = sectionValues.put(sectionCoord, element);
-                        if (previousValue != null) continue;
+                        if (!notEmptySections.contains(sectionCoord)) {
+                            tryClose(element);
+                            continue;
+                        }
+
+                        var previousValue = sectionValues.putIfAbsent(sectionCoord, element);
+                        if (previousValue != null) {
+                            long previousPriority = previousValue instanceof PrioritizedTask p1 ? p1.priority() : Long.MIN_VALUE;
+                            long newPriority = element instanceof PrioritizedTask p2 ? p2.priority() : Long.MIN_VALUE;
+
+                            if (previousPriority > newPriority) {
+                                tryClose(element);
+                            } else if (sectionValues.replace(sectionCoord, previousValue, element)) {
+                                tryClose(previousValue);
+                            } else {
+                                tryClose(element);
+                            }
+                            continue;
+                        }
 
                         sectionQueue[size++] = new SectionInfo(sectionCoord);
                         changed = true;
@@ -449,6 +574,7 @@ public class SectionManager implements RenderingComponent {
             lock.lockInterruptibly();
 
             try {
+                if (closed) return;
                 if (unloadedQueue.add(section))
                     notEmptyCondition.signalAll();
             } finally {
@@ -460,6 +586,7 @@ public class SectionManager implements RenderingComponent {
             lock.lockInterruptibly();
 
             try {
+                if (closed) return;
                 if (unloadedQueue.addAll(sections))
                     notEmptyCondition.signalAll();
             } finally {
@@ -483,7 +610,7 @@ public class SectionManager implements RenderingComponent {
                 sectionQueue[i] = null;
 
                 if (!notEmptySections.contains(entry.pos)) {
-                    sectionValues.remove(entry.pos);
+                    tryClose(sectionValues.remove(entry.pos));
                     continue;
                 }
 
@@ -497,7 +624,8 @@ public class SectionManager implements RenderingComponent {
         }
 
         private void sortSections() {
-            var cameraChunkPos = getCameraChunkPos();
+            getCameraChunkPos(cameraPosScratch);
+            var cameraChunkPos = cameraPosScratch;
 
             if (
                     !newPending &&
@@ -506,7 +634,8 @@ public class SectionManager implements RenderingComponent {
             ) return;
 
             newPending = false;
-            lastCameraPos = cameraChunkPos;
+            if (lastCameraPos == null) lastCameraPos = new Vector3i(cameraChunkPos);
+            else lastCameraPos.set(cameraChunkPos);
             lastRenderDistance = SectionManager.this.lastRenderDistance;
 
             trimUnloadedSections();

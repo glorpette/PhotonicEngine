@@ -38,12 +38,13 @@ public abstract class AbstractLightList implements Runnable, RenderingComponent 
     private static final int MAX_SECTIONS_PER_RUN = 48;
     private static final IBlock BLOCK_LAVA = IBlock.fromIdOrThrow(Id.fromNamespaceAndPath("minecraft", "lava"));
 
-    private final Thread compilerThread;
+    private Thread compilerThread;
     private final ReentrantLock lock = new ReentrantLock();
 
     private boolean needsReload = false;
+    private volatile boolean closed;
     private LightRegistry lightRegistry;
-    private final PhConfigWatcher<LightRegistry> lightsRegistryObserver;
+    private PhConfigWatcher<LightRegistry> lightsRegistryObserver;
 
     private final int maxLights;
     private final Supplier<WorldOrigin> worldOriginSupplier;
@@ -73,17 +74,29 @@ public abstract class AbstractLightList implements Runnable, RenderingComponent 
                 .arrayListValues()
                 .build();
 
-        this.compilerThread = new Thread(this, "Photonics Light List Compiler");
-        this.compilerThread.start();
-
         this.lightRegistry = PhConfig.getLightRegistry();
-        this.lightsRegistryObserver = PhConfig.watch(
+
+    }
+
+    protected final void startCompiler() {
+        if (compilerThread != null) throw new IllegalStateException("Light compiler already started");
+        lightsRegistryObserver = PhConfig.watch(
                 ignored -> PhConfig.getLightRegistry(),
                 this::setLightRegistry
         );
+
+        try {
+            compilerThread = new Thread(this, "Photonics Light List Compiler");
+            compilerThread.setDaemon(true);
+            compilerThread.start();
+        } catch (RuntimeException | Error failure) {
+            lightsRegistryObserver.close();
+            throw failure;
+        }
     }
 
     private void setLightRegistry(LightRegistry lightRegistry) {
+        if (closed) return;
         this.lightRegistry = lightRegistry;
 
         needsReload = true;
@@ -93,6 +106,7 @@ public abstract class AbstractLightList implements Runnable, RenderingComponent 
     @Override
     public void run() {
         while (true) {
+            if (closed) return;
             if (Thread.interrupted() && !needsReload) return;
 
             try {
@@ -118,7 +132,7 @@ public abstract class AbstractLightList implements Runnable, RenderingComponent 
                     storeLights(newLights);
                 }
             } catch (InterruptedException e) {
-                if (!needsReload) return;
+                if (closed || !needsReload) return;
             }
         }
     }
@@ -338,10 +352,30 @@ public abstract class AbstractLightList implements Runnable, RenderingComponent 
 
     @Override
     public void close() {
+        if (closed) return;
+        closed = true;
         needsReload = false;
+        if (lightsRegistryObserver != null)
+            lightsRegistryObserver.close();
+        if (compilerThread == null) return;
         compilerThread.interrupt();
 
-        lightsRegistryObserver.close();
+        boolean interrupted = false;
+        while (compilerThread.isAlive()) {
+            try {
+                compilerThread.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+                compilerThread.interrupt();
+            }
+        }
+
+        sectionHashes.clear();
+        tracedLightPositions.clear();
+        lights = null;
+        mostRecentLights = null;
+        if (interrupted)
+            Thread.currentThread().interrupt();
     }
 
     private static final Vector3i[] NEIGHBORS = new Vector3i[]{

@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-public class WorldRegistry {
+public class WorldRegistry implements AutoCloseable {
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     private final WorldLightRegistry lightRegistry;
@@ -66,6 +66,14 @@ public class WorldRegistry {
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    @Override
+    public void close() {
+        blockModelRegistry.clearCache();
+        blockRegistry.clearCache();
+        paletteRegistry.clearCache();
+        lightRegistry.clearCache();
     }
 
     private static boolean hasEnqueuedObject(ObjectRegistry<?>[] registries) {

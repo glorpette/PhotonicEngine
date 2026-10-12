@@ -14,6 +14,14 @@ public interface MemoryView extends Disposable {
 
     ByteBuffer buffer();
 
+    default int getInt(int byteOffset) {
+        return buffer().getInt(byteOffset);
+    }
+
+    default void putInt(int byteOffset, int value) {
+        buffer().putInt(byteOffset, value);
+    }
+
     void upload();
 
     static int intBufferBegin(MemoryView memory) {

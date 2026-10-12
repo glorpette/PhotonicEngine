@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 public abstract class AbstractWorldObject<M extends Disposable> implements WorldObject {
     private static final int CLOSED = -3;
@@ -75,27 +76,56 @@ public abstract class AbstractWorldObject<M extends Disposable> implements World
     }
 
     protected M setMemory(Supplier<M> memorySupplier) {
+        return setMemory(memorySupplier, ignored -> { });
+    }
+
+    protected M setMemory(Supplier<M> memorySupplier, Consumer<M> initializer) {
         while (true) {
             int count = this.referenceCount;
             checkCanAllocate(count);
 
             if (!VAR_HANDLE.compareAndSet(this, count, ALLOCATING)) continue;
 
-            var memory = memorySupplier.get();
-            this.memory = memory;
+            M allocatedMemory = null;
+            List<WorldObject> acquiredDependants = new ArrayList<>();
+            try {
+                allocatedMemory = memorySupplier.get();
+                this.memory = allocatedMemory;
 
-            List<WorldObject> dependants = new ArrayList<>();
-            loadDependants(dependants);
+                List<WorldObject> dependants = new ArrayList<>();
+                loadDependants(dependants);
 
-            for (var dependant : dependants) {
-                dependant.acquireReference();
-                dependant.awaitAllocated();
+                for (var dependant : dependants) {
+                    dependant.acquireReference();
+                    acquiredDependants.add(dependant);
+                    dependant.awaitAllocated();
+                }
+
+                initializer.accept(allocatedMemory);
+
+                if (!VAR_HANDLE.compareAndSet(this, ALLOCATING, 0))
+                    throw new IllegalStateException("Count was changed during allocation");
+
+                return allocatedMemory;
+            } catch (RuntimeException | Error failure) {
+                this.memory = null;
+                for (int i = acquiredDependants.size() - 1; i >= 0; i--) {
+                    try {
+                        acquiredDependants.get(i).close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                if (allocatedMemory != null) {
+                    try {
+                        allocatedMemory.close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
+                VAR_HANDLE.setVolatile(this, CLOSED);
+                throw failure;
             }
-
-            if (!VAR_HANDLE.compareAndSet(this, ALLOCATING, 0))
-                throw new IllegalStateException("Count was changed during allocation");
-
-            return memory;
         }
     }
 
@@ -123,16 +153,33 @@ public abstract class AbstractWorldObject<M extends Disposable> implements World
     protected boolean dispose() {
         if (!VAR_HANDLE.compareAndSet(this, 0, CLOSED)) return false;
 
-        memory.close();
-        memory = null;
+        disposeContents();
+        return true;
+    }
+
+    private void disposeContents() {
+        M memory = this.memory;
+        this.memory = null;
+        if (memory != null)
+            memory.close();
 
         List<WorldObject> dependants = new ArrayList<>();
         loadDependants(dependants);
 
         for (var dependant : dependants)
             dependant.close();
+    }
 
-        return true;
+    @Override
+    public final void enqueueIfUnused() {
+        if (referenceCount == 0)
+            registry.enqueueObject(new HandleImpl());
+    }
+
+    @Override
+    public final void discardIfUnused() {
+        if (VAR_HANDLE.compareAndSet(this, 0, CLOSED))
+            disposeContents();
     }
 
     @Override

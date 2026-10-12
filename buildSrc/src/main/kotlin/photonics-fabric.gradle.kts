@@ -21,21 +21,31 @@ dependencies {
     // Fabric loader is needed on common for mixin dependency.
     // Why not just include the mixin dependency raw? I have no clue, ask architectury.
     if (fabricLoader != null) {
-        add("modImplementation", fabricLoader)
+        val configuration = if (phConfig.minecraft.get().startsWith("26.")) "implementation" else "modImplementation"
+        add(configuration, fabricLoader)
     }
 }
 
 val jarName = "photonics-${project.version}-${project.name}+MC-${phConfig.minecraft.get()}"
 
 tasks {
-    named<RemapJarTask>("remapJar") {
-        archiveFileName = "$jarName.jar"
+    if (tasks.findByName("remapJar") != null) {
+        named<RemapJarTask>("remapJar") {
+            archiveFileName = "$jarName.jar"
 
-        dependsOn(shadowJar)
-        inputFile = shadowJar.get().archiveFile;
-    }
+            dependsOn(shadowJar)
+            inputFile = shadowJar.get().archiveFile
+        }
 
-    named<RemapSourcesJarTask>("remapSourcesJar") {
-        archiveFileName = "$jarName-sources.jar"
+        named<RemapSourcesJarTask>("remapSourcesJar") {
+            archiveFileName = "$jarName-sources.jar"
+        }
+    } else {
+        named<Jar>("jar") {
+            archiveFileName = "$jarName.jar"
+            dependsOn(shadowJar)
+            duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+            from(shadowJar.map { zipTree(it.archiveFile.get().asFile) })
+        }
     }
 }

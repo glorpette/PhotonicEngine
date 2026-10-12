@@ -12,7 +12,9 @@ public abstract class VoxelTreeNode implements VoxelTreeEntry {
     private final int depth;
 
     private int size = 0;
-    private final @Nullable VoxelTreeEntry[] data = new VoxelTreeEntry[ENTRIES_SIZE];
+    private @Nullable VoxelTreeEntry[] data = new VoxelTreeEntry[ENTRIES_SIZE];
+    private @Nullable VoxelTreeEntry[] packedData;
+    private long occupancyMask;
 
     protected VoxelTreeNode(int depth) {
         this.depth = depth;
@@ -26,7 +28,33 @@ public abstract class VoxelTreeNode implements VoxelTreeEntry {
         this(depth);
 
         this.size = size;
-        System.arraycopy(entries, 0, data, 0, ENTRIES_SIZE);
+        pack(entries);
+    }
+
+    protected VoxelTreeNode(int depth, VoxelTreeEntry[] entries) {
+        this.depth = depth;
+        pack(entries);
+    }
+
+    private void pack(VoxelTreeEntry[] entries) {
+        int count = 0;
+        for (int i = 0; i < ENTRIES_SIZE; i++) {
+            if (entries[i] != null) {
+                occupancyMask |= 1L << i;
+                count++;
+            }
+        }
+
+        var packed = new VoxelTreeEntry[count];
+        int output = 0;
+        for (var entry : entries) {
+            if (entry != null)
+                packed[output++] = entry;
+        }
+
+        size = count;
+        data = null;
+        packedData = packed;
     }
 
     @Override
@@ -49,16 +77,27 @@ public abstract class VoxelTreeNode implements VoxelTreeEntry {
     protected abstract VoxelTreeNode createNode(int x, int y, int z);
 
     protected @Nullable VoxelTreeEntry getEntry(int index) {
-        return data[index];
+        var mutableData = data;
+        if (mutableData != null) return mutableData[index];
+
+        long bit = 1L << index;
+        if ((occupancyMask & bit) == 0) return null;
+
+        int packedIndex = Long.bitCount(occupancyMask & (bit - 1));
+        return packedData[packedIndex];
     }
 
     protected @Nullable VoxelTreeEntry replaceEntry(int index, @Nullable VoxelTreeEntry entry) {
-        var previous = data[index];
+        var mutableData = data;
+        if (mutableData == null)
+            throw new IllegalStateException("Cannot mutate a packed voxel node");
+
+        var previous = mutableData[index];
         if (previous == entry) return null;
 
         onChanged();
 
-        data[index] = entry;
+        mutableData[index] = entry;
 
         if (previous == null)
             size++;
@@ -103,7 +142,8 @@ public abstract class VoxelTreeNode implements VoxelTreeEntry {
         long mask = 0;
         int i = 0;
 
-        for (var entry : data) {
+        for (int entryIndex = 0; entryIndex < ENTRIES_SIZE; entryIndex++) {
+            var entry = getEntry(entryIndex);
             mask >>>= 1;
             if (entry == null) continue;
 

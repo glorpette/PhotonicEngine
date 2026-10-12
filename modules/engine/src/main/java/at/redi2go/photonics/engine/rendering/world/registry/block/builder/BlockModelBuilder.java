@@ -1,7 +1,6 @@
 package at.redi2go.photonics.engine.rendering.world.registry.block.builder;
 
 import at.redi2go.photonics.engine.rendering.world.bakery.VoxelConsumer;
-import at.redi2go.photonics.engine.rendering.world.block.TextureData;
 import at.redi2go.photonics.engine.rendering.world.registry.block.BlockRegistry;
 import at.redi2go.photonics.engine.rendering.world.registry.block.model.BlockModelImpl;
 import at.redi2go.photonics.engine.rendering.world.registry.block.model.BlockModelRegistry;
@@ -24,7 +23,10 @@ public class BlockModelBuilder implements VoxelConsumer {
     private BlockLayerBuilder lastPart = null;
 
     @Override
-    public void acceptVoxel(int x, int y, int z, int normal, TextureData textureData) {
+    public void acceptVoxel(
+            int x, int y, int z, int normal,
+            int blockId, int color, int textureNormal, int specular
+    ) {
         BlockLayerBuilder builder;
 
         Vector3i blockPos = new Vector3i(Math.floorDiv(x, 16), Math.floorDiv(y, 16), Math.floorDiv(z, 16));
@@ -42,7 +44,10 @@ public class BlockModelBuilder implements VoxelConsumer {
         tempPos.z = correctVoxelPos(z);
 
         tempVoxelData.normal = normal;
-        tempVoxelData.textureData = textureData;
+        tempVoxelData.blockId = blockId;
+        tempVoxelData.color = color;
+        tempVoxelData.textureNormal = textureNormal;
+        tempVoxelData.specular = specular;
 
         builder.insertEntry(tempPos, tempVoxelData);
     }

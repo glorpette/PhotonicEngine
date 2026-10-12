@@ -9,6 +9,7 @@ dependencies {
     // Fabric loader is needed on common for mixin dependency.
     // Why not just include the mixin dependency raw? I have no clue, ask architectury.
     if (fabricLoader != null) {
-        add("modImplementation", fabricLoader)
+        val configuration = if (phConfig.minecraft.get().startsWith("26.")) "implementation" else "modImplementation"
+        add(configuration, fabricLoader)
     }
 }

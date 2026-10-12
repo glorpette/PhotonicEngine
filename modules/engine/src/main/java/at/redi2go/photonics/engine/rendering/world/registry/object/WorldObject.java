@@ -12,6 +12,12 @@ public interface WorldObject extends Disposable {
 
     boolean tryAcquireReference();
 
+    /** Queues an allocated object for reclamation if no owner references it yet. */
+    void enqueueIfUnused();
+
+    /** Disposes a newly-created object when its allocation transaction fails. */
+    void discardIfUnused();
+
     interface Handle<T extends WorldObject> {
         @Nullable T free();
     }

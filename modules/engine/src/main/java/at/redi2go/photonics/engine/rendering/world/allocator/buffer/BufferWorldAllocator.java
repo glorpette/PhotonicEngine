@@ -69,34 +69,28 @@ public class BufferWorldAllocator implements WorldAllocator {
 
         protected abstract int extraFieldCount();
 
-        protected abstract ByteBuffer buffer();
+        protected abstract int getInt(int byteOffset);
+
+        protected abstract void putInt(int byteOffset, int value);
 
         protected abstract int offset();
 
         @Override
         public void setEntryFlag(boolean isLeaf) {
-            var buffer = buffer();
             int offset = offset();
 
-            int data0 = buffer.getInt(offset);
-            buffer.putInt(
-                    offset,
-                    (data0 & ~1) | (isLeaf ? 1 : 0)
-            );
+            int data0 = getInt(offset);
+            putInt(offset, (data0 & ~1) | (isLeaf ? 1 : 0));
         }
 
         @Override
         public void setEntryData(int entryData) {
             if (entryData < 0) throw new IllegalArgumentException("data must positive");
 
-            var buffer = buffer();
             int offset = offset();
 
-            int data0 = buffer.getInt(offset);
-            buffer.putInt(
-                    offset,
-                    (data0 & 1) | entryData << 1
-            );
+            int data0 = getInt(offset);
+            putInt(offset, (data0 & 1) | entryData << 1);
         }
 
         @Override
@@ -106,8 +100,8 @@ public class BufferWorldAllocator implements WorldAllocator {
 
             int offset = offset();
 
-            buffer().putInt(offset + 4, (int) mask);
-            buffer().putInt(offset + 8, (int) (mask >>> 32));
+            putInt(offset + 4, (int) mask);
+            putInt(offset + 8, (int) (mask >>> 32));
         }
 
         @Override
@@ -115,10 +109,9 @@ public class BufferWorldAllocator implements WorldAllocator {
             if (extra.length > extraFieldCount())
                 Objects.checkIndex(extra.length - 1, extraFieldCount());
 
-            var buffer = buffer();
             int baseOffset = offset() + 12;
             for (int i = 0; i < extra.length; i++)
-                buffer.putInt(baseOffset + (i << 2), extra[i]);
+                putInt(baseOffset + (i << 2), extra[i]);
         }
     }
 
@@ -148,8 +141,13 @@ public class BufferWorldAllocator implements WorldAllocator {
         }
 
         @Override
-        protected ByteBuffer buffer() {
-            return memory.buffer();
+        protected int getInt(int byteOffset) {
+            return memory.getInt(byteOffset);
+        }
+
+        @Override
+        protected void putInt(int byteOffset, int value) {
+            memory.putInt(byteOffset, value);
         }
 
         @Override
@@ -195,10 +193,13 @@ public class BufferWorldAllocator implements WorldAllocator {
             int newCapacity = capacity(newSize, capacity);
             if (capacity == newCapacity) return;
 
-            if (memory != null) memory.close();
-
-            memory = heap.allocateOrThrow((long) entryByteSize * newCapacity);
+            MemoryView replacement = heap.allocateOrThrow((long) entryByteSize * newCapacity);
+            MemoryView previous = memory;
+            memory = replacement;
             capacity = newCapacity;
+
+            if (previous != null)
+                previous.close();
         }
 
         @Override
@@ -259,8 +260,13 @@ public class BufferWorldAllocator implements WorldAllocator {
             }
 
             @Override
-            protected ByteBuffer buffer() {
-                return memory.buffer();
+            protected int getInt(int byteOffset) {
+                return memory.getInt(byteOffset);
+            }
+
+            @Override
+            protected void putInt(int byteOffset, int value) {
+                memory.putInt(byteOffset, value);
             }
 
             @Override

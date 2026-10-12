@@ -20,6 +20,9 @@ public interface BlockBakery {
     );
 
     interface MeshResult extends Disposable {
+        /** Resolves any deferred textures before the result is keyed or baked. */
+        default void prepare() {}
+
         long vertexHash();
 
         void bake(VoxelConsumer voxelConsumer) throws InterruptedException;

@@ -18,7 +18,7 @@ public class VoxelLayer extends BlockNodeObject {
             PaletteRegistry paletteRegistry,
             BlockRegistry blockRegistry
     ) {
-        super(blockRegistry, VOXEL_DEPTH);
+        super(blockRegistry, VOXEL_DEPTH, paletteEntries(node, paletteRegistry));
 
         long hash = 1;
 
@@ -28,11 +28,20 @@ public class VoxelLayer extends BlockNodeObject {
             var entry = node.getEntry(i);
             if (entry == null) continue;
 
-            setEntry(i, paletteRegistry.allocate((PaletteEntry) entry));
             hash+= entry.hashCode();
         }
 
         this.hash = hash;
+    }
+
+    private static VoxelTreeEntry[] paletteEntries(VoxelLayerBuilder node, PaletteRegistry paletteRegistry) {
+        var entries = new VoxelTreeEntry[ENTRIES_SIZE];
+        for (int i = 0; i < ENTRIES_SIZE; i++) {
+            var entry = node.getEntry(i);
+            if (entry != null)
+                entries[i] = paletteRegistry.allocate((PaletteEntry) entry);
+        }
+        return entries;
     }
 
     public long longHashCode() {

@@ -1,6 +1,7 @@
 package at.redi2go.photonics.engine.rendering.world.bakery.impl;
 
 import at.redi2go.photonics.engine.rendering.world.bakery.Vertex;
+import at.redi2go.photonics.engine.rendering.world.bakery.BaryPos;
 import org.joml.Vector3f;
 import org.joml.Vector3i;
 
@@ -24,7 +25,8 @@ public record RasterState(
         Vector3f vertex,
 
         Vector3f voxelPos,
-        Vector3f worldPos
+        Vector3f worldPos,
+        BaryPos baryPos
 ) {
     public RasterState() {
         this(
@@ -42,7 +44,8 @@ public record RasterState(
                 new Vector3i(),
                 new Vector3f(),
                 new Vector3f(),
-                new Vector3f()
+                new Vector3f(),
+                new BaryPos()
         );
     }
 

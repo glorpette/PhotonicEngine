@@ -18,10 +18,12 @@ import org.joml.Vector3i;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 
 public class BlockModelRegistry extends ObjectRegistry<BlockModelImpl> {
+    private static final int MAX_CACHED_MESH_STATES = 8_192;
     private final BlockBakery bakery;
     private final BlockRegistry blockRegistry;
 
@@ -50,27 +52,40 @@ public class BlockModelRegistry extends ObjectRegistry<BlockModelImpl> {
 
             blockMeshCache.remove(mesh);
         }
+        trimMeshCache();
+    }
+
+    public void clearCache() {
+        super.clearCache();
+        blockMeshCache.clear();
+        modelCache.clear();
     }
 
     private CompletionStage<@WeakValue BlockModelImpl> cacheModel(BlockBakery.MeshResult blockMesh) {
         CompletableFuture<BlockModelImpl> future = new CompletableFuture<>();
         var resultFuture = modelCache.putIfAbsent(blockMesh.vertexHash(), future);
 
-        if (resultFuture != null) return resultFuture;
+        if (resultFuture != null) {
+            blockMesh.close();
+            return resultFuture;
+        }
 
         try {
             var builder = new BlockModelBuilder();
 
             blockMesh.bake(builder);
-            blockMesh.close();
-
             var result = builder.build(blockMesh.vertexHash(), blockRegistry, this);
             future.complete(result);
+            if (result != null)
+                result.enqueueIfUnused();
         } catch (Throwable t) {
+            modelCache.remove(blockMesh.vertexHash(), future);
             future.completeExceptionally(t);
+        } finally {
+            blockMesh.close();
         }
 
-        blockMesh.close();
+        trimMeshCache();
 
         return future;
     }
@@ -91,6 +106,7 @@ public class BlockModelRegistry extends ObjectRegistry<BlockModelImpl> {
         );
 
         CompletableFuture<@Nullable BlockModel> future = new CompletableFuture<>();
+        BlockBakery.MeshResult meshResult = null;
 
         try(var lock = acquireLock()) {
             if (meshState.shouldCache()) {
@@ -99,7 +115,7 @@ public class BlockModelRegistry extends ObjectRegistry<BlockModelImpl> {
                     return acquireModelReference(resultFuture);
             }
 
-            var meshResult = bakery.meshBlock(
+            meshResult = bakery.meshBlock(
                     blockMesher,
                     meshState,
                     blockChunkOffset,
@@ -108,33 +124,66 @@ public class BlockModelRegistry extends ObjectRegistry<BlockModelImpl> {
                     blockAndTintGetter
             );
 
+            if (meshResult != null)
+                meshResult.prepare();
+
             meshState.prepareCacheUse();
             if (meshResult == null) {
                 future.complete(null);
+                trimMeshCache();
                 return future;
             }
 
-
-            cacheModel(meshResult)
-                    .handle((model, e) -> {
+            var cachedModel = cacheModel(meshResult);
+            meshResult = null;
+            cachedModel
+                    .whenComplete((model, e) -> {
                         try {
-                            if (e == null) {
-                                if (model != null)
+                            if (e != null) {
+                                if (meshState.shouldCache())
+                                    blockMeshCache.remove(meshState, future);
+                                future.completeExceptionally(e);
+                                return;
+                            }
+
+                            if (model != null)
+                                if (meshState.shouldCache())
                                     model.meshes().add(meshState);
 
-                                future.complete(model);
-                            } future.completeExceptionally(e);
+                            future.complete(model);
                         } catch (Throwable t) {
+                            if (meshState.shouldCache())
+                                blockMeshCache.remove(meshState, future);
                             future.completeExceptionally(t);
                         }
-
-                        return null;
                     });
 
             return acquireModelReference(future);
         } catch (Throwable t) {
+            if (meshResult != null)
+                meshResult.close();
+            if (meshState.shouldCache())
+                blockMeshCache.remove(meshState, future);
             future.completeExceptionally(t);
             return future;
+        }
+    }
+
+    private void trimMeshCache() {
+        int excess = blockMeshCache.size() - MAX_CACHED_MESH_STATES;
+        if (excess <= 0) return;
+
+        for (Map.Entry<BlockMeshState, CompletableFuture<@Nullable @WeakValue BlockModel>> entry : blockMeshCache.entrySet()) {
+            if (excess == 0) return;
+
+            var future = entry.getValue();
+            if (!future.isDone() || !blockMeshCache.remove(entry.getKey(), future)) continue;
+
+            future.thenAccept(model -> {
+                if (model != null)
+                    ((BlockModelImpl) model).meshes().remove(entry.getKey());
+            });
+            excess--;
         }
     }
 

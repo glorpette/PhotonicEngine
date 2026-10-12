@@ -13,6 +13,7 @@ import java.util.List;
 public abstract class AbstractRenderingComponent implements RenderingComponent {
     private final List<RenderingComponent> components;
     private final List<Disposable> resources = new ArrayList<>();
+    private boolean closed;
 
     public AbstractRenderingComponent(@Nullable RenderingComponent... components) {
         this.components = new ArrayList<>(components.length);
@@ -81,14 +82,33 @@ public abstract class AbstractRenderingComponent implements RenderingComponent {
 
     @Override
     public void close() {
-        for (int i = components.size() - 1; i >= 0; i--)
-            components.get(i).close();
+        if (closed) return;
+        closed = true;
+        Throwable failure = null;
 
-        for (int i = resources.size() - 1; i >= 0; i--)
-            resources.get(i).close();
+        for (int i = components.size() - 1; i >= 0; i--) {
+            try {
+                components.get(i).close();
+            } catch (RuntimeException | Error closeFailure) {
+                if (failure == null) failure = closeFailure;
+                else failure.addSuppressed(closeFailure);
+            }
+        }
+
+        for (int i = resources.size() - 1; i >= 0; i--) {
+            try {
+                resources.get(i).close();
+            } catch (RuntimeException | Error closeFailure) {
+                if (failure == null) failure = closeFailure;
+                else failure.addSuppressed(closeFailure);
+            }
+        }
 
         components.clear();
         resources.clear();
+
+        if (failure instanceof RuntimeException runtimeException) throw runtimeException;
+        if (failure instanceof Error error) throw error;
     }
 
 }

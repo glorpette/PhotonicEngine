@@ -67,7 +67,12 @@ subprojects {
     // Some of this is unnecessary and no I don't care
     dependencies {
         if (project.name != "common") {
-            add("shadow", add("implementation", project(commonPath, configuration = "namedElements")) {
+            val commonDependency = if (project.parent?.projectDir?.name?.startsWith("26_") == true) {
+                project(commonPath)
+            } else {
+                project(commonPath, configuration = "namedElements")
+            }
+            add("shadow", add("implementation", commonDependency) {
                 isTransitive = false
             }) {
                 isTransitive = false
@@ -75,6 +80,7 @@ subprojects {
 
             add("shadow", project(gamePath)) { isTransitive = false }
             add("shadow", project(enginePath)) { isTransitive = false }
+
         } else {
             add("implementation", project(gamePath))
             add("implementation", project(enginePath))
@@ -84,6 +90,12 @@ subprojects {
         add("runtimeOnly", project(enginePath))
 
         ext.set("proj", this@subprojects)
+    }
+
+    if (project.name != "common" && project.parent?.projectDir?.name?.startsWith("26_") == true) {
+        this@subprojects.tasks.named("compileJava") {
+            dependsOn(this@subprojects.project(commonPath).tasks.named("classes"))
+        }
     }
 
     tasks {
